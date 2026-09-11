@@ -1,0 +1,47 @@
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[project]
+name = "cellpose_scPhenomics"
+version = "0.0.1"
+description = """
+    Cellpose-based single-cell phenomics pipeline for microscopy imaging.
+"""
+authors = [
+  { name = "Mcatstar", email = "lyz_ouc@126.com"},
+]
+license = { file = "LICENSE" }
+readme = "README.md"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License"
+]
+dependencies = [
+    "numpy (>= 1.21, < 2.4)",
+    "pandas (>=3.0.5,<4.0.0)",
+    "opencv-python (>=5.0.0.93,<6.0.0.0)",
+    "scipy (>=1.18.1,<2.0.0)",
+    "tqdm (>=4.70.0,<5.0.0)",
+    "scikit-image (>=0.26.0,<0.27.0)",
+    "tifffile (>=2026.8.23,<2027.0.0)",
+    "cellpose[gui] (<4.0)",
+    "loguru (>=0.7.3,<0.8.0)",
+    "pytest (>=9.1.1,<10.0.0)",
+    "napari[pyqt6] (>=0.9.1,<0.10.0)"
+]
+requires-python = "~=3.13.0"
+package-mode = false
+
+[tool.ruff]
+line-length = 99
+src = ["src"]
+include = ["pyproject.toml", "src/**/*.py"]
+
+[tool.ruff.lint]
+extend-select = ["I"]  # Add import sorting
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+force-sort-within-sections = true
+
