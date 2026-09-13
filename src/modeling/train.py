@@ -38,7 +38,7 @@ class CellposeModelTrainer():
             n_epochs=300,               # 训练轮数，可按需调整
             learning_rate=1e-5,         # 微调时使用较小的学习率
             batch_size=8,               # 根据 GPU 显存调整
-            min_train_masks=5           # 图像至少包含 5 个细胞才用于训练
+            min_train_masks=5           # 图像至少包含 5 个标记才用于训练
         )
         logger.success("Model training complete.")
 
