@@ -1,5 +1,6 @@
 from pathlib import Path
 import re
+import time, random
 
 import numpy as np
 from numpy.typing import NDArray
@@ -47,24 +48,17 @@ def roi_cut(img: NDArray, masks: NDArray, roi: NDArray | None=None):
     roi_crop = roi[y0:y1, x0:x1]
     
     # 裁切 置零
-    if img.ndim == 2:
-        img_crop = img[y0:y1, x0:x1].copy()
-        img_crop[roi_crop == 0] = 0
-    else:
-        img_crop = np.stack(
-            [np.where(roi_crop == 0, 0, img[c, y0:y1, x0:x1]).astype(img.dtype)
-            for c in range(img.shape[0])], 
-            axis=0
-        )
-    if masks.ndim == 2:
-        masks_crop = masks[y0:y1, x0:x1].copy()
-        masks_crop[roi_crop == 0] = 0
-    else:
-        masks_crop = np.stack(
-            [np.where(roi_crop == 0, 0, masks[c, y0:y1, x0:x1]).astype(masks.dtype)
-            for c in range(masks.shape[0])], 
-            axis=0
-        )
+    
+    img_crop = np.stack(
+        [np.where(roi_crop == 0, 0, img[c, y0:y1, x0:x1]).astype(img.dtype)
+        for c in range(img.shape[0])], 
+        axis=0
+    )
+    masks_crop = np.stack(
+        [np.where(roi_crop == 0, 0, masks[c, y0:y1, x0:x1]).astype(masks.dtype)
+        for c in range(masks.shape[0])], 
+        axis=0
+    )
     return img_crop, masks_crop, roi_crop, (y0, y1, x0, x1)
 
 
@@ -98,16 +92,19 @@ def main(
         logger.info(f"Image path: {img_path}")
         img = imread(img_path)
         logger.info(f"img.shape: {img.shape}")
-
         # Cutting image----------------------------------
         # Mask work area, _masks.tif and _roi.tif in /data/external
         masks_path = EXTERNAL_DATA_DIR / f"{img_list[img_index].name.replace(".tif", "_masks.tif")}"
         masks = imread(masks_path) if masks_path.exists() else np.zeros_like(img)
         roi_path = EXTERNAL_DATA_DIR / f"{img_list[img_index].name.replace(".tif", "_roi.tif")}"
         roi = imread(roi_path) if roi_path.exists() else None
+        if img.ndim == 2: # 升维，统一为(C, H, W)
+            img_norm = img_norm[np.newaxis, ...]    # (1, H, W)
+        if masks.ndim == 2:
+            masks = masks[np.newaxis, ...]
         img_crop, masks_crop, roi_crop, box = roi_cut(img, masks, roi)
         box_records.append({
-            'id': img_index,
+            'id': f"{img_index}-{int(time.time())}-{random.random()}",
             'name': img_list[img_index].name,
             'y0': box[0], 'y1': box[1], 'x0': box[2], 'x1': box[3],
             'orig_h': img.shape[-2], 'orig_w': img.shape[-1],

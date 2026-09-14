@@ -4,7 +4,7 @@
     <img src="https://img.shields.io/badge/CCDS-Project%20template-328F97?logo=cookiecutter" />
 </a>
 
-Cllpose-based single-cell phenomics pipeline for microscopy imaging.
+Cellpose-based single-cell phenomics pipeline for microscopy imaging.
 
 ## Project Organization
 
@@ -52,15 +52,16 @@ Cllpose-based single-cell phenomics pipeline for microscopy imaging.
     │
     ├── features.py             <- Code to create features for modeling
     │
-    ├── modeling                
+    ├── modeling              
     │   ├── __init__.py 
-    │   ├── predict.py          <- Code to run model inference with trained models          
+    │   ├── predict.py          <- Code to run model inference with trained models        
     │   └── train.py            <- Code to train models
     │
     └── plots.py                <- Code to create visualizations
 ```
 
---------
+---
 
 # cellpose_scPhenomics
+
 Cllpose-based single-cell phenomics pipeline for microscopy imaging.

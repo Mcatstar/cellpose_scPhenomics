@@ -1,6 +1,8 @@
+from abc import ABC, abstractmethod
 from pathlib import Path
 
 from cellpose import io, models, train, core
+from cellpose.models import CellposeModel
 from loguru import logger
 from tqdm import tqdm
 import typer
@@ -10,37 +12,63 @@ from src.config import MODELS_DIR, PROCESSED_DATA_DIR
 app = typer.Typer()
 
 
-class CellposeModelTrainer():
-    def __init__(self, train_path: Path, test_path: Path, model_path: Path, gpu: bool = True, model_type: str = 'cyto'):
+class CellposeTrainer:
+    """训练基类：加载数据 → 初始化预训练模型 → 微调"""
+
+    def __init__(self, train_path: Path, test_path: Path, model_path: Path,
+                 model_type: str = "cyto3", gpu: bool = True):
         self.train_path = train_path
         self.test_path = test_path
         self.model_path = model_path
-        self.gpu = core.use_gpu()
+        self.gpu = gpu and core.use_gpu()
+
         output = io.load_train_test_data(
-            self.train_path, self.test_path, 
-            image_filter="_img", 
-            mask_filter="_masks"
+            train_path, test_path,
+            image_filter="_img", mask_filter="_masks",
         )
         self.images, self.labels, _, self.test_images, self.test_labels, _ = output
-        self.model = models.CellposeModel(gpu=self.gpu, model_type='cyto')
+        self.model: CellposeModel = models.CellposeModel(gpu=self.gpu, model_type=model_type)
 
-    def train(self):
-        # Implement training logic here
-        logger.info(f"Training model with data from {self.train_path} and {self.test_path}")
-        model_path, train_losses, test_losses = train.train_seg(
-            self.model.net,                  # 从预训练模型初始化的网络
+    def train(self, n_epochs=300, learning_rate=1e-5, batch_size=8,
+              min_train_masks=1, normalize=False):
+        self.model_path.mkdir(parents=True, exist_ok=True)
+        result = train.train_seg(
+            self.model.net,
             train_data=self.images,
             train_labels=self.labels,
             test_data=self.test_images,
             test_labels=self.test_labels,
-            channels=[0, 0],            # 根据你的图像通道调整，如 [0,0] 代表灰度
-            save_path=str(self.model_path), # 保存路径
-            n_epochs=300,               # 训练轮数，可按需调整
-            learning_rate=1e-5,         # 微调时使用较小的学习率
-            batch_size=8,               # 根据 GPU 显存调整
-            min_train_masks=5           # 图像至少包含 5 个标记才用于训练
+            channels=[0, 0],
+            normalize=normalize,
+            save_path=str(self.model_path),
+            n_epochs=n_epochs,
+            learning_rate=learning_rate,
+            batch_size=batch_size,
+            min_train_masks=min_train_masks,
+            model_name=self.__class__.__name__.lower(),
         )
-        logger.success("Model training complete.")
+        logger.success(f"model saved at {result[0]}")
+        return result
+
+
+class MitoTrainer(CellposeTrainer):
+    def __init__(self, gpu=True):
+        super().__init__(
+            train_path=PROCESSED_DATA_DIR / "train" / "mito",
+            test_path=PROCESSED_DATA_DIR / "test" / "mito",
+            model_path=MODELS_DIR,
+            gpu=gpu,
+        )
+
+
+class LipidTrainer(CellposeTrainer):
+    def __init__(self, gpu=True):
+        super().__init__(
+            train_path=PROCESSED_DATA_DIR / "train" / "lipid",
+            test_path=PROCESSED_DATA_DIR / "test" / "lipid",
+            model_path=MODELS_DIR,
+            gpu=gpu,
+        )
 
 
 @app.command()
@@ -53,8 +81,8 @@ def main(
 ):
     # ---- REPLACE THIS WITH YOUR OWN CODE ----
     logger.info("Training some model...")
-    real_diameter = 18
-
+    MitoTrainer().train(n_epochs=300, learning_rate=1e-5, batch_size=8)
+    LipidTrainer().train(n_epochs=300, learning_rate=1e-5, batch_size=8)
     logger.success("Modeling training complete.")
     # -----------------------------------------
 
