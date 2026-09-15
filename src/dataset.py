@@ -19,8 +19,8 @@ app = typer.Typer()
 
 def roi_cut(img: NDArray, masks: NDArray, roi: NDArray | None=None):
     """
-    img: 原始图像，形状 (H, W) 或 (C, H, W)
-    masks: 标记掩码或识别目标，形状 (H, W) 或 (C, H, W)
+    img: 原始图像，(C, H, W)
+    masks: 标记掩码或识别目标，形状(C, H, W)
     roi: 工作区域或识别区域掩码标记，形状 (H, W), roi>0 为识别区域
     返回：(img_crop, masks_crop, box)
     """

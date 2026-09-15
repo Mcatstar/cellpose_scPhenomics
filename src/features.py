@@ -45,9 +45,9 @@ def normalize_roi(img_crop: NDArray, roi_crop: NDArray, lower=1, upper=99):
 
 
 def pad_to_size(img_2d: NDArray, target_h: int, target_w: int) -> NDArray:
-    """把 2D (H, W) padding 到 (1, target_h, target_w)，左上角对齐"""
-    out = np.zeros((1, target_h, target_w), dtype=img_2d.dtype)
-    out[0, :img_2d.shape[0], :img_2d.shape[1]] = img_2d
+    """把 2D (H, W) padding 到 (target_h, target_w)，左上角对齐"""
+    out = np.zeros((target_h, target_w), dtype=img_2d.dtype)
+    out[:img_2d.shape[0], :img_2d.shape[1]] = img_2d
     return out
 
 
@@ -102,16 +102,24 @@ def main(
         masks_path = INTERIM_DATA_DIR / row["name"].replace(".tif", "_masks.tif")
         img_norm = imread(img_norm_path)
         masks = imread(masks_path)
+        img_stacks = []
+        masks_stacks = []
         for cat, (src_img_ch, src_mask_ch) in dict_ch.items():
             img_2d  = img_norm[src_img_ch]        # (H_i, W_i)
             mask_2d = masks[src_mask_ch]     # (H_i, W_i)
 
-            img_pad  = pad_to_size(img_2d,  H_max, W_max)   # (1, H_max, W_max)
-            mask_pad = pad_to_size(mask_2d, H_max, W_max)   # (1, H_max, W_max)
-            img_i_path = output_path / "train" / f"{cat}" / row["name"].replace(".tif", f"_img.tif")
-            masks_i_path = output_path / "train" / f"{cat}" / row["name"].replace(".tif", f"_masks.tif")
-            imwrite(img_i_path, img_pad.astype(np.float32))
-            imwrite(masks_i_path, mask_pad.astype(np.uint16))
+            img_i_pad  = pad_to_size(img_2d,  H_max, W_max)   # (1, H_max, W_max)
+            mask_i_pad = pad_to_size(mask_2d, H_max, W_max)   # (1, H_max, W_max)
+
+            img_stacks.append(img_i_pad)
+            masks_stacks.append(mask_i_pad)
+
+        img_pad = np.stack(img_stacks)
+        masks_pad = np.stack(masks_stacks)
+        img_i_path = output_path / "train" / row["name"].replace(".tif", "_img.tif")
+        masks_i_path = output_path / "train" / row["name"].replace(".tif", "_masks.tif")
+        imwrite(img_i_path, img_pad.astype(np.float32))
+        imwrite(masks_i_path, masks_pad.astype(np.uint16))
         logger.info(f"Successfully padding the No.{i+1} image in total {N}")
     logger.success("Features generation complete.")
     # -----------------------------------------
