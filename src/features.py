@@ -1,131 +1,139 @@
+"""
+features.py —— 从大图生成 Cellpose 训练数据。
+
+流程（所有中间产物都在 INTERIM_DATA_DIR, 仅最终数据落到 PROCESSED_DATA_DIR) :
+  Step1  ROI 归一化：  xxx_img.tif + xxx_roi_crop.tif
+                       →  INTERIM/xxx_img_norm.tif
+  Step2  切片：        INTERIM/xxx_img_norm.tif + xxx_masks.tif
+                       →  INTERIM/xxx_y{y}-x{x}_img.tif / _masks.tif
+  Step3  尺寸统一：    INTERIM/*_y*-x*_img.tif / _masks.tif
+                       →  PROCESSED/train/  (尺寸一致时 pad 自动 no-op)
+"""
+
+from __future__ import annotations
+
 from pathlib import Path
-import re
+from typing import Optional
 
 import numpy as np
-from numpy.typing import NDArray
-import pandas as pd
-from tifffile import imread, imwrite
-from loguru import logger
-from tqdm import tqdm
 import typer
+from loguru import logger
+from numpy.typing import NDArray
+from tifffile import imread, imwrite
+from tqdm import tqdm
 
-from src.config import PROCESSED_DATA_DIR, INTERIM_DATA_DIR
+from config import INTERIM_DATA_DIR, PROCESSED_DATA_DIR
+from utils import Padder, Tiler
 
 app = typer.Typer()
 
 
-def normalize_roi(img_crop: NDArray, roi_crop: NDArray, lower=1, upper=99):
-    """ROI区域内的归一化
-    img_crop: ROI 裁切后的图像, (H, W) 或 (C, H, W)
-    roi_crop: 同尺寸 ROI 掩码，(H, W), roi>0 为有效区域
-    返回: 归一化后的图像, ROI 外为 0
-    """
-    img = img_crop.astype(np.float32)
+# ROI 归一化（features 专属逻辑）
+def normalize_roi(img: NDArray, roi: NDArray, lower: int = 1, upper: int = 99) -> NDArray:
+    """ROI 内 1-99 百分位归一化到 [0, 1]; ROI 外置 0"""
+    img = img.astype(np.float32)
 
     if img.ndim == 2:
-        vals = img[roi_crop > 0]
+        vals = img[roi > 0]
         if vals.size == 0:
             return np.zeros_like(img)
         low, high = np.percentile(vals, [lower, upper])
         high = max(high, low + 1e-6)
         out = np.clip((img - low) / (high - low), 0, 1)
-        out[roi_crop == 0] = 0
-        return out
-    else:
-        out = np.zeros_like(img)
-        for c in range(img.shape[0]):
-            vals = img[c][roi_crop > 0]
-            if vals.size == 0:
-                continue
-            low, high = np.percentile(vals, [lower, upper])
-            high = max(high, low + 1e-6)
-            out[c] = np.clip((img[c] - low) / (high - low), 0, 1)
-            out[c][roi_crop == 0] = 0
+        out[roi == 0] = 0
         return out
 
-
-def pad_to_size(img_2d: NDArray, target_h: int, target_w: int) -> NDArray:
-    """把 2D (H, W) padding 到 (target_h, target_w)，左上角对齐"""
-    out = np.zeros((target_h, target_w), dtype=img_2d.dtype)
-    out[: img_2d.shape[0], : img_2d.shape[1]] = img_2d
+    out = np.zeros_like(img)
+    for c in range(img.shape[0]):
+        vals = img[c][roi > 0]
+        if vals.size == 0:
+            continue
+        low, high = np.percentile(vals, [lower, upper])
+        high = max(high, low + 1e-6)
+        out[c] = np.clip((img[c] - low) / (high - low), 0, 1)
+        out[c][roi == 0] = 0
     return out
 
 
 @app.command()
 def main(
-    # ---- REPLACE DEFAULT PATHS AS APPROPRIATE ----
     input_path: Path = INTERIM_DATA_DIR,
     output_path: Path = PROCESSED_DATA_DIR,
-    # -----------------------------------------
-):
-    # ---- REPLACE THIS WITH YOUR OWN CODE ----
+    crop_size: int = 512,
+    stride: Optional[int] = None,
+    min_mask_fraction: float = 0.0,
+    multiple_of: int = 16,
+) -> None:
     logger.info("Generating features from dataset...")
-    # 定义频道字典, 含义[在_img.tif的频道, 在_masks.tif的频道]
-    dict_ch = {"mito": [0, 0], "lipid": [1, 1]}
+    logger.info(f"input  = {input_path}")
+    logger.info(f"output = {output_path}")
 
-    logger.info(f"Input path: {input_path}")
-    logger.info(f"Output path: {output_path}")
-    # Load image-------------------------------------
-    tmp_list: list[Path] = list(Path(input_path).iterdir())
-    img_list: list[Path] = []
-    for tmp in tmp_list:
-        if re.search("_img.tif", str(tmp)):
-            img_list.append(tmp)  # img_list have full path, not name, e.g. "/path/to/img.tif"
+    train_path = output_path / "train"
+    train_path.mkdir(parents=True, exist_ok=True)
 
-    logger.info("images found:\n" + "\n".join(map(lambda x: str(x.name), img_list)))
-    logger.info(f"Number of images found: {len(img_list)}")
-    # img_index = int(input('Select image: '))
-    for img_index in tqdm(range(len(img_list)), total=len(img_list), desc="Features Generation"):
-        # Select image and load it
-        img_crop_path = input_path / f"{img_list[img_index].name}"
-        roi_crop_path = (
-            input_path / f"{img_list[img_index].name.replace('_img.tif', '_roi_crop.tif')}"
+    # Step 1: ROI 归一化 → INTERIM/xxx_img_norm.tif
+    img_path_list = sorted(
+        p
+        for p in input_path.iterdir()
+        if p.is_file()
+        and p.name.endswith("_img.tif")
+        and not p.name.endswith("_img_norm.tif")
+        and "_y" not in p.stem.split("_img")[0][-6:]
+    )
+
+    for img_path in tqdm(img_path_list, desc="Step1 ROI 归一化"):
+        roi_path = img_path.with_name(img_path.name.replace("_img.tif", "_roi_crop.tif"))
+        img = imread(img_path)
+        roi = imread(roi_path)
+        img_norm = normalize_roi(img, roi)
+        img_norm_path = input_path / img_path.name.replace("_img.tif", "_img_norm.tif")
+        imwrite(img_norm_path, img_norm.astype(np.float32))
+
+    # Step 2: 切片 → INTERIM/xxx_y{y}-x{x}_img.tif / _masks.tif
+    for old_path in list(input_path.glob("*_y*-x*_img.tif")) + list(
+        input_path.glob("*_y*-x*_masks.tif")
+    ):
+        old_path.unlink()
+
+    tiler = Tiler(
+        crop_size=crop_size,
+        stride=crop_size // 2,  # 50%重叠区域
+        min_mask_fraction=min_mask_fraction,
+    )
+
+    n_tiles_total = 0
+    pairs_found = 0
+    for img_norm_path in sorted(input_path.glob("*_img_norm.tif")):
+        base_name = img_norm_path.name.replace("_img_norm.tif", "")
+        mask_path = input_path / f"{base_name}_masks.tif"
+        if not mask_path.exists():
+            logger.warning(f"缺少 mask, 跳过：{img_norm_path.name}")
+            continue
+        n = tiler.save_pair(
+            img_norm_path,
+            mask_path,
+            input_path,
+            base_name=base_name,
+            img_suffix="_img.tif",
+            mask_suffix="_masks.tif",
         )
-        img_crop = imread(img_crop_path)
-        roi_crop = imread(roi_crop_path)
-        img_norm = normalize_roi(img_crop, roi_crop)
-        img_norm_path = (
-            INTERIM_DATA_DIR / f"{img_list[img_index].name.replace('_img.tif', '_img_norm.tif')}"
-        )
-        imwrite(img_norm_path, img_norm)
-        logger.info(
-            f"Successfully normlizing the No.{img_index + 1} image in total {len(img_list)}"
-        )
+        n_tiles_total += n
+        pairs_found += 1
 
-    box_records_path = input_path / "box_records.csv"
-    box_records = pd.read_csv(box_records_path)
-    H_max = box_records.loc[:, "crop_h"].max()
-    W_max = box_records.loc[:, "crop_w"].max()
-    H_max = int(np.ceil(H_max / 16) * 16)
-    W_max = int(np.ceil(W_max / 16) * 16)
-    N = len(box_records)
+    logger.info(f"切片完成：{pairs_found} 对，共 {n_tiles_total} 个 tile → {INTERIM_DATA_DIR}")
 
-    for i, (_, row) in tqdm(enumerate(box_records.iterrows()), total=N, desc="Padding Generation"):
-        img_norm_path = INTERIM_DATA_DIR / row["name"].replace(".tif", "_img_norm.tif")
-        masks_path = INTERIM_DATA_DIR / row["name"].replace(".tif", "_masks.tif")
-        img_norm = imread(img_norm_path)
-        masks = imread(masks_path)
-        img_stacks = []
-        masks_stacks = []
-        for cat, (src_img_ch, src_mask_ch) in dict_ch.items():
-            img_2d = img_norm[src_img_ch]  # (H_i, W_i)
-            mask_2d = masks[src_mask_ch]  # (H_i, W_i)
+    # Step 3: 尺寸统一 → PROCESSED/train/
+    tile_img_path_list = sorted(input_path.glob("*_y*-x*_img.tif"))
+    tile_mask_path_list = sorted(input_path.glob("*_y*-x*_masks.tif"))
+    all_tile_path_list = tile_img_path_list + tile_mask_path_list
 
-            img_i_pad = pad_to_size(img_2d, H_max, W_max)  # (1, H_max, W_max)
-            mask_i_pad = pad_to_size(mask_2d, H_max, W_max)  # (1, H_max, W_max)
+    padder = Padder(multiple_of=multiple_of)
+    changed = padder.unify_dir(all_tile_path_list, output_path=train_path)
 
-            img_stacks.append(img_i_pad)
-            masks_stacks.append(mask_i_pad)
-
-        img_pad = np.stack(img_stacks)
-        masks_pad = np.stack(masks_stacks)
-        img_i_path = output_path / "train" / row["name"].replace(".tif", "_img.tif")
-        masks_i_path = output_path / "train" / row["name"].replace(".tif", "_masks.tif")
-        imwrite(img_i_path, img_pad.astype(np.float32))
-        imwrite(masks_i_path, masks_pad.astype(np.uint16))
-        logger.info(f"Successfully padding the No.{i + 1} image in total {N}")
-    logger.success("Features generation complete.")
-    # -----------------------------------------
+    if changed:
+        logger.success(f"已完成 padding 并输出到 {train_path}")
+    else:
+        logger.success(f"尺寸已一致，已复制 {len(all_tile_path_list)} 个文件 → {train_path}")
 
 
 if __name__ == "__main__":
