@@ -45,3 +45,7 @@ extend-select = ["I"]  # Add import sorting
 known-first-party = ["src"]
 force-sort-within-sections = true
 
+[dependency-groups]
+dev = [
+    "ruff (>=0.16.8,<0.17.0)"
+]
