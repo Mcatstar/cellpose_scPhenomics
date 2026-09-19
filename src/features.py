@@ -22,11 +22,17 @@ from numpy.typing import NDArray
 from tifffile import imread, imwrite
 from tqdm import tqdm
 
-from config import INTERIM_DATA_DIR, PROCESSED_DATA_DIR
-from utils import Padder, Tiler
+from src.config import INTERIM_DATA_DIR, PROCESSED_DATA_DIR
+from src.utils import Padder, Tiler
 
 app = typer.Typer()
 
+
+def select_channels(arr: NDArray, channels: list[int]) -> NDArray:
+    """只保留指定通道索引, 2D 数组原样返回"""
+    if arr.ndim < 3:
+        return arr
+    return arr[channels]
 
 # ROI 归一化（features 专属逻辑）
 def normalize_roi(img: NDArray, roi: NDArray, lower: int = 1, upper: int = 99) -> NDArray:
@@ -65,13 +71,20 @@ def main(
     multiple_of: int = 16,
 ) -> None:
     logger.info("Generating features from dataset...")
-    logger.info(f"input  = {input_path}")
-    logger.info(f"output = {output_path}")
+    logger.info(f"input path: {input_path}")
+    logger.info(f"output path: {output_path}")
 
     train_path = output_path / "train"
     train_path.mkdir(parents=True, exist_ok=True)
 
-    # Step 1: ROI 归一化 → INTERIM/xxx_img_norm.tif
+    # 定义所需数据字典
+    CHANNEL_MAP: dict[str, dict[str, int]] = {
+        "mito":  {"img": 0, "masks": 0},
+        "lipid": {"img": 1, "masks": 1},
+    }
+    IMG_CHANNELS: list[int] = [v["img"] for v in CHANNEL_MAP.values()]
+
+    # ROI 归一化
     img_path_list = sorted(
         p
         for p in input_path.iterdir()
@@ -81,35 +94,31 @@ def main(
         and "_y" not in p.stem.split("_img")[0][-6:]
     )
 
-    for img_path in tqdm(img_path_list, desc="Step1 ROI 归一化"):
+    for img_path in tqdm(img_path_list, desc="ROI Normlizing"):
         roi_path = img_path.with_name(img_path.name.replace("_img.tif", "_roi_crop.tif"))
         img = imread(img_path)
         roi = imread(roi_path)
+        img = select_channels(img, IMG_CHANNELS)
         img_norm = normalize_roi(img, roi)
         img_norm_path = input_path / img_path.name.replace("_img.tif", "_img_norm.tif")
         imwrite(img_norm_path, img_norm.astype(np.float32))
 
-    # Step 2: 切片 → INTERIM/xxx_y{y}-x{x}_img.tif / _masks.tif
-    for old_path in list(input_path.glob("*_y*-x*_img.tif")) + list(
-        input_path.glob("*_y*-x*_masks.tif")
-    ):
-        old_path.unlink()
-
+    # 切片
     tiler = Tiler(
         crop_size=crop_size,
-        stride=crop_size // 2,  # 50%重叠区域
+        stride=crop_size,  # 滑动步长，此时0%重叠区域
         min_mask_fraction=min_mask_fraction,
     )
 
     n_tiles_total = 0
     pairs_found = 0
-    for img_norm_path in sorted(input_path.glob("*_img_norm.tif")):
+    for img_norm_path in tqdm(sorted(input_path.glob("*_img_norm.tif")), desc="Tiling"):
         base_name = img_norm_path.name.replace("_img_norm.tif", "")
         mask_path = input_path / f"{base_name}_masks.tif"
         if not mask_path.exists():
             logger.warning(f"缺少 mask, 跳过：{img_norm_path.name}")
             continue
-        n = tiler.save_pair(
+        n = tiler.tile(
             img_norm_path,
             mask_path,
             input_path,
@@ -122,13 +131,13 @@ def main(
 
     logger.info(f"切片完成：{pairs_found} 对，共 {n_tiles_total} 个 tile → {INTERIM_DATA_DIR}")
 
-    # Step 3: 尺寸统一 → PROCESSED/train/
+    # 尺寸统一
     tile_img_path_list = sorted(input_path.glob("*_y*-x*_img.tif"))
     tile_mask_path_list = sorted(input_path.glob("*_y*-x*_masks.tif"))
     all_tile_path_list = tile_img_path_list + tile_mask_path_list
 
     padder = Padder(multiple_of=multiple_of)
-    changed = padder.unify_dir(all_tile_path_list, output_path=train_path)
+    changed = padder.unify(all_tile_path_list, output_path=train_path)
 
     if changed:
         logger.success(f"已完成 padding 并输出到 {train_path}")
