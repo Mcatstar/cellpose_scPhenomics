@@ -58,12 +58,12 @@ def main(
             effective_img = img[:img.shape[0] - black_bar_height, :]
             black_bar = img[img.shape[0] - black_bar_height:, :]
             bh = black_bar.shape[0]
-            bottom_8u = cv2.normalize(src=black_bar, dst=None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX).astype(np.uint8)
+            bottom_8u = cv2.normalize(src=black_bar, dst=None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX).astype(np.uint8) # pyright: ignore[reportArgumentType, reportCallIssue]
             _, binary = cv2.threshold(bottom_8u, 200, 255, cv2.THRESH_BINARY)
             text = pytesseract.image_to_string(binary, config='--psm 6')
             scale_match = re.search(r'(\d+\.?\d*)\s*([uµ]m|nm)', text, re.IGNORECASE)
-            bar_value = float(scale_match.group(1))
-            unit = scale_match.group(2).lower()
+            bar_value = float(scale_match.group(1)) # type: ignore
+            unit = scale_match.group(2).lower() # type: ignore
             if 'nm' in unit:
                 physical_nm = bar_value
             else:  # µm / um
@@ -86,8 +86,9 @@ def main(
             nm_per_px = physical_nm / pixel_distance
             metadata.append(
                 {
-                    "img_path": str(img_path.relative_to(input_path)),
-                    "img_name": img_path.name,
+                    "origin_path": str(img_path.relative_to(input_path)),
+                    "origin_name": img_path.name,
+                    "img_name": f"{img_path.parent.name}-{img_path.stem}_img.tif",
                     "origin_shape": origin_shape,
                     "shape": effective_img.shape,
                     "width_px": width_px,

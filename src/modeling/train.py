@@ -1,11 +1,8 @@
 from pathlib import Path
 
-import numpy as np
-import tifffile as tiff
-from cellpose import io, models, train, core
-from cellpose.models import CellposeModel
-from loguru import logger
 import typer
+from cellpose import io, models, train, core
+from loguru import logger
 
 from src.config import MODELS_DIR, PROCESSED_DATA_DIR
 
@@ -13,42 +10,30 @@ app = typer.Typer()
 
 
 class CellposeTrainer:
-    """微调基类：加载单通道灰度图 + 对应掩码 → 微调预训练模型"""
-
-    # 子类覆盖：掩码文件的后缀，用于从 *_img.tif 推回掩码路径
-    mask_suffix: str = "_masks.tif"
+    """微调基类：用 cellpose.io.load_train_test_data 加载数据 → 微调"""
+    mask_suffix: str = "_masks"
     model_name: str = "cellpose_model"
     model_type: str = "cyto3"
 
-    def __init__(self, train_path: Path, test_path: Path, model_path: Path,
-                 gpu: bool = True):
-        self.train_path = train_path
-        self.test_path = test_path
+    def __init__(self, train_path: Path, test_path: Path,
+                 model_path: Path, gpu: bool = True):
         self.model_path = model_path
         self.gpu = gpu and core.use_gpu()
 
-        self.train_images, self.train_labels = self._load(train_path)
-        self.test_images, self.test_labels = self._load(test_path)
-        self.model: CellposeModel = models.CellposeModel(
-            gpu=self.gpu, model_type=self.model_type,
+        (
+            self.train_images, self.train_labels, _,
+            self.test_images, self.test_labels, _,
+        )  = io.load_train_test_data(
+            str(train_path), str(test_path),
+            image_filter="_img", mask_filter=self.mask_suffix,
         )
 
-    def _load(self, data_path: Path):
-        """读取 *_img.tif 和对应的掩码文件（由 self.mask_suffix 指定）"""
-        img_paths = sorted(data_path.glob("*_img.tif"))
-        images, labels = [], []
-        for img_path in img_paths:
-            mask_path = img_path.with_name(
-                img_path.name.replace("_img.tif", self.mask_suffix))
-            if not mask_path.exists():
-                raise FileNotFoundError(f"掩码未找到: {mask_path}")
-
-            images.append(np.asarray(tiff.imread(img_path)))
-            labels.append(np.asarray(tiff.imread(mask_path)).astype(np.uint16))
-
         logger.info(
-            f"[{self.model_name}] {data_path.name}: {len(images)} samples")
-        return images, labels
+            f"[{self.model_name}] train={len(self.train_images)}, test={len(self.test_images)}" # type: ignore
+        )
+        self.model = models.CellposeModel(
+            gpu=self.gpu, model_type=self.model_type,
+        )
 
     def train(self, n_epochs: int = 300, learning_rate: float = 1e-5,
               batch_size: int = 8, min_train_masks: int = 1,
@@ -74,25 +59,13 @@ class CellposeTrainer:
 
 
 class MitoTrainer(CellposeTrainer):
-    mask_suffix = "_mito_masks.tif"
+    mask_suffix = "_mito_masks"
     model_name = "mito_model"
-
-    def __init__(self, train_path: Path = PROCESSED_DATA_DIR / "train",
-                 test_path: Path = PROCESSED_DATA_DIR / "test",
-                 model_path: Path = MODELS_DIR,
-                 gpu: bool = True):
-        super().__init__(train_path, test_path, model_path, gpu)
 
 
 class LipidTrainer(CellposeTrainer):
-    mask_suffix = "_ld_masks.tif"
+    mask_suffix = "_ld_masks"
     model_name = "lipid_model"
-
-    def __init__(self, train_path: Path = PROCESSED_DATA_DIR / "train",
-                 test_path: Path = PROCESSED_DATA_DIR / "test",
-                 model_path: Path = MODELS_DIR,
-                 gpu: bool = True):
-        super().__init__(train_path, test_path, model_path, gpu)
 
 
 @app.command()
@@ -103,18 +76,18 @@ def main(
     learning_rate: float = 1e-5,
     batch_size: int = 2,        # 实际使用时改为 8
     normalize: bool = False,
-    gpu: bool = True,
+    gpu: bool = False,
 ):
     io.logger_setup()
 
     logger.info("Training mito model ...")
-    MitoTrainer(train_path=train_path, test_path=test_path, gpu=gpu).train(
+    MitoTrainer(train_path, test_path, MODELS_DIR, gpu).train(
         n_epochs=n_epochs, learning_rate=learning_rate,
         batch_size=batch_size, normalize=normalize,
     )
 
     logger.info("Training lipid model ...")
-    LipidTrainer(train_path=train_path, test_path=test_path, gpu=gpu).train(
+    LipidTrainer(train_path, test_path, MODELS_DIR, gpu).train(
         n_epochs=n_epochs, learning_rate=learning_rate,
         batch_size=batch_size, normalize=normalize,
     )

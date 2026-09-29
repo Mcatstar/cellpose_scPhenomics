@@ -1,28 +1,28 @@
 """
-features.py —— 从大图生成 Cellpose 训练数据。
+features.py —— 把 INTERIM_DATA_DIR 里已标注的 *_img.tif / *_mito_labels.tif /
+*_ld_labels.tif 转移到 PROCESSED_DATA_DIR
 
-流程（中间产物都在 INTERIM_DATA_DIR, 最终落到 PROCESSED_DATA_DIR/train/）:
-  Step1  ROI 归一化: xxx_img.tif + xxx_roi_crop.tif → INTERIM/xxx_img_norm.tif
-  Step2  切片：      INTERIM/xxx_img_norm.tif + xxx_masks.tif
-                     → INTERIM/xxx_y{y}-x{x}_img.tif / _masks.tif
-  Step3  尺寸统一：  INTERIM/*_y*-x*_img.tif / _masks.tif
-                     → PROCESSED/train/
+规则：
+1. 已标注数据（两个标签都存在）：
+   - 根据 img 的形状裁剪标签（左上角对齐，因为 dataset 阶段切掉了黑边）
+   - 80/20 随机划分到 train 和 test, 标签文件重命名为 *_masks.tif
+2. 仅推理数据（缺少任一标签）：
+   - 全部放入 infer, 不裁剪
 """
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
-from typing import Optional
 
+import pandas as pd
 import typer
 from loguru import logger
+from sklearn.model_selection import train_test_split
 from tifffile import imread, imwrite
 from tqdm import tqdm
 
-from src.config import INTERIM_DATA_DIR, PROCESSED_DATA_DIR
-from src.utils.padding import compute_target_size, pad_to_size, tif_shape
-from src.utils.roi import normalize_roi
-from src.utils.tiling import iter_tiles
+from src.config import EXTERNAL_DATA_DIR, INTERIM_DATA_DIR, PROCESSED_DATA_DIR
 
 app = typer.Typer()
 
@@ -31,128 +31,70 @@ app = typer.Typer()
 def main(
     input_path: Path = INTERIM_DATA_DIR,
     output_path: Path = PROCESSED_DATA_DIR,
-    crop_size: int = 512,
-    stride: Optional[int] = None,
-    min_mask_fraction: float = 0.0,
-    multiple_of: int = 16,
+    train_ratio: float = 0.8,
+    seed: int = 42,
 ) -> None:
     logger.info("Generating features from dataset...")
     logger.info(f"input path: {input_path}")
     logger.info(f"output path: {output_path}")
 
-    train_path = output_path / "train"
-    train_path.mkdir(parents=True, exist_ok=True)
+    train_dir = output_path / "train"
+    test_dir = output_path / "test"
+    infer_dir = output_path / "infer"
 
-    stride = stride if stride is not None else crop_size
+    metadata = pd.read_csv(input_path / "metadata.csv")
+    logger.info(f"metadata 记录数: {len(metadata)}")
 
-    # ------------------------------------------------------------------
-    # Step 1: ROI 归一化
-    # ------------------------------------------------------------------
-    img_path_list = sorted(
-        p
-        for p in input_path.iterdir()
-        if p.is_file()
-        and p.name.endswith("_img.tif")
-        and not p.name.endswith("_img_norm.tif")
-    )
-
-    for img_path in tqdm(img_path_list, desc="ROI Normalizing"):
-        roi_path = img_path.with_name(
-            img_path.name.replace("_img.tif", "_roi_crop.tif")
-        )
-        img = imread(img_path)
-        roi = imread(roi_path)
-        img_norm = normalize_roi(img, roi)
-        imwrite(
-            input_path / img_path.name.replace("_img.tif", "_img_norm.tif"),
-            img_norm.astype("float32"),
-        )
-
-    # ------------------------------------------------------------------
-    # Step 2: 切片
-    # ------------------------------------------------------------------
-    n_tiles_total = 0
-    pairs_found = 0
-
-    for img_norm_path in tqdm(
-        sorted(input_path.glob("*_img_norm.tif")), desc="Tiling"
-    ):
-        base_name = img_norm_path.name.replace("_img_norm.tif", "")
-        mask_path = input_path / f"{base_name}_masks.tif"
-        if not mask_path.exists():
-            logger.warning(f"缺少 mask, 跳过：{img_norm_path.name}")
+    # ---------- 分类 ----------
+    labeled, inference_only = [], []
+    for img_name in metadata["img_name"]:
+        img_path = input_path / img_name
+        if not img_path.exists():
+            logger.warning(f"图像不存在, 跳过: {img_name}")
             continue
 
-        img = imread(img_norm_path)
-        mask = imread(mask_path)
-
-        if img.shape[-2:] != mask.shape[-2:]:
-            logger.warning(
-                f"形状不匹配, 跳过：{img_norm_path.name} "
-                f"{img.shape} vs {mask.shape}"
-            )
-            continue
-
-        H, W = img.shape[-2:]
-
-        # 小图：整张写出，交给 Step 3 padding 对齐
-        if H < crop_size or W < crop_size:
-            if min_mask_fraction > 0 and (mask > 0).mean() < min_mask_fraction:
-                logger.info(f"{img_norm_path.name}: mask 比例不足, 跳过")
-                continue
-            name = f"{base_name}_y0-x0"
-            imwrite(input_path / f"{name}_img.tif", img)
-            imwrite(input_path / f"{name}_masks.tif", mask)
-            n_tiles_total += 1
-            pairs_found += 1
-            continue
-
-        # 正常滑窗
-        n = 0
-        for y, x, img_tile, mask_tile in iter_tiles(
-            img, mask, crop_size, stride, min_mask_fraction
-        ):
-            name = f"{base_name}_y{y}-x{x}"
-            imwrite(input_path / f"{name}_img.tif", img_tile)
-            imwrite(input_path / f"{name}_masks.tif", mask_tile)
-            n += 1
-        n_tiles_total += n
-        pairs_found += 1
+        base = img_name[: -len("_img.tif")]
+        has_mito = (EXTERNAL_DATA_DIR / f"{base}_mito_labels.tif").exists()
+        has_ld = (EXTERNAL_DATA_DIR / f"{base}_ld_labels.tif").exists()
+        (labeled if has_mito and has_ld else inference_only).append(img_path)
 
     logger.info(
-        f"切片完成：{pairs_found} 对, 共 {n_tiles_total} 个 tile → {input_path}"
+        f"已标注样本: {len(labeled)}, 仅推理样本: {len(inference_only)}"
     )
 
-    # ------------------------------------------------------------------
-    # Step 3: 尺寸统一
-    # ------------------------------------------------------------------
-    tile_img_paths = sorted(input_path.glob("*_y*-x*_img.tif"))
-    tile_mask_paths = sorted(input_path.glob("*_y*-x*_masks.tif"))
-    all_tile_paths = tile_img_paths + tile_mask_paths
-
-    if not all_tile_paths:
-        logger.warning("未找到任何 tile, 退出")
-        return
-
-    shapes = [
-        tif_shape(p)
-        for p in tqdm(all_tile_paths, desc="读取尺寸", unit=" file", leave=False)
-    ]
-    target_h, target_w, needs_pad = compute_target_size(
-        shapes, multiple_of=multiple_of
+    # ---------- 已标注：80/20 划分 + 裁剪 + 重命名为 masks ----------
+    train_imgs, test_imgs = (
+        train_test_split(labeled, train_size=train_ratio, random_state=seed)
+        if labeled else ([], [])
     )
 
-    if needs_pad:
-        logger.info(f"发现尺寸不一致, 统一 pad 到 ({target_h}, {target_w})")
-    else:
-        logger.info(f"尺寸已一致 ({target_h}, {target_w}), 仅做复制")
+    for img_list, target_dir in (
+        (train_imgs, train_dir),
+        (test_imgs, test_dir),
+    ):
+        for img_path in tqdm(img_list, desc=f"已标注 → {target_dir.name}"):
+            base = img_path.name[: -len("_img.tif")]
+            h, w = imread(img_path).shape[:2]
 
-    for path in tqdm(all_tile_paths, desc="写入 train", unit=" file"):
-        arr = imread(path)
-        arr = pad_to_size(arr, target_h, target_w)
-        imwrite(train_path / path.name, arr)
+            shutil.copy2(img_path, target_dir / img_path.name)
+            for tag in ("_mito", "_ld"):
+                src = EXTERNAL_DATA_DIR / f"{base}{tag}_labels.tif"
+                dst = target_dir / src.name.replace("_labels", "_masks")
+                imwrite(dst, imread(src)[:h, :w])
 
-    logger.success(f"已输出 {len(all_tile_paths)} 个文件 → {train_path}")
+    # ---------- 仅推理：原样转移到 infer ----------
+    for img_path in tqdm(inference_only, desc="仅推理 → infer"):
+        base = img_path.name[: -len("_img.tif")]
+        shutil.copy2(img_path, infer_dir / img_path.name)
+        for tag in ("_mito", "_ld"):
+            src = EXTERNAL_DATA_DIR / f"{base}{tag}_labels.tif"
+            if src.exists():
+                shutil.copy2(src, infer_dir / src.name)
+
+    logger.success(
+        f"完成: train={len(train_imgs)}, test={len(test_imgs)}, "
+        f"infer={len(inference_only)} → {output_path}"
+    )
 
 
 if __name__ == "__main__":
