@@ -1,0 +1,85 @@
+path\to\cellposeSCP\src\empanadaseg>tree /f
+卷 新加卷 的文件夹 PATH 列表
+卷序列号为 287A-FF46
+E:.
+│  array_utils.py
+│  config_loaders.py
+│  consensus.py
+│  losses.py
+│  metrics.py
+│  zarr_utils.py
+│  _version.py
+│  __init__.py
+│
+├─configs
+│      DropNet_base_v1.yaml
+│      MitoNet_v1.yaml
+│      MitoNet_v1_mini.yaml
+│      NucleoNet_base_v2.yaml
+│
+├─data
+│  │  bc_dataset.py
+│  │  panoptic_dataset.py
+│  │  single_class_instance_dataset.py
+│  │  volume_dataset.py
+│  │  _base.py
+│  │  __init__.py
+│  │
+│  └─utils
+│          sampler.py
+│          target_creation.py
+│          transforms.py
+│          __init__.py
+│
+├─evaluation
+│      evaluator.py
+│      instance_metrics.py
+│      panoptic_metrics.py
+│      semantic_metrics.py
+│      __init__.py
+│
+├─inference
+│      engines.py
+│      filters.py
+│      matcher.py
+│      patterns.py
+│      postprocess.py
+│      rle.py
+│      tile.py
+│      tracker.py
+│      watershed.py
+│      __init__.py
+│
+└─models
+    │  blocks.py
+    │  heads.py
+    │  panoptic_bifpn.py
+    │  panoptic_deeplab.py
+    │  point_rend.py
+    │  __init__.py
+    │
+    ├─decoders
+    │      aspp.py
+    │      bifpn.py
+    │      panoptic_deeplab.py
+    │      __init__.py
+    │
+    ├─encoders
+    │      regnet.py
+    │      resnet.py
+    │      __init__.py
+    │
+    └─quantization
+        │  panoptic_bifpn.py
+        │  panoptic_deeplab.py
+        │  point_rend.py
+        │  __init__.py
+        │
+        ├─decoders
+        │      panoptic_deeplab.py
+        │      __init__.py
+        │
+        └─encoders
+                regnet.py
+                resnet.py
+                __init__.py

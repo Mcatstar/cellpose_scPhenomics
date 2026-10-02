@@ -1,22 +1,12 @@
-[build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
-build-backend = "poetry.core.masonry.api"
-
 [project]
-name = "cellpose_scPhenomics"
-version = "0.0.1"
-description = """
-    Cellpose-based single-cell phenomics pipeline for microscopy imaging.
-"""
-authors = [
-  { name = "Mcatstar", email = "lyz_ouc@126.com"},
-]
-license = { file = "LICENSE" }
+name = "cellposescp"
+version = "0.1.0"
+description = """Cellpose-based single-cell phenomics pipeline for microscopy imaging."""
 readme = "README.md"
-classifiers = [
-    "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License"
+authors = [
+    { name = "Mcatstar", email = "lyz_ouc@126.com" }
 ]
+requires-python = ">=3.13,<3.14"
 dependencies = [
     "numpy (>= 1.21, < 2.4)",
     "pandas (>=3.0.5,<4.0.0)",
@@ -32,23 +22,15 @@ dependencies = [
     "dotenv (>=0.9.9,<0.10.0)",
     "pytesseract (>=0.3.13,<0.4.0)",
     "scikit-learn (>=1.9.1,<2.0.0)",
+    "pyyaml>=6.0.3",
 ]
-requires-python = "~=3.13.0"
-package-mode = false
 
-[tool.ruff]
-line-length = 99
-src = ["src"]
-include = ["pyproject.toml", "src/**/*.py"]
+[project.scripts]
+cellposescp = "cellposescp:main"
 
-[tool.ruff.lint]
-extend-select = ["I"]  # Add import sorting
+[build-system]
+requires = ["uv_build>=0.12.19,<0.13.0"]
+build-backend = "uv_build"
 
-[tool.ruff.lint.isort]
-known-first-party = ["src"]
-force-sort-within-sections = true
-
-[dependency-groups]
-dev = [
-    "ruff (>=0.16.8,<0.17.0)"
-]
+[tool.uv]
+package = false
