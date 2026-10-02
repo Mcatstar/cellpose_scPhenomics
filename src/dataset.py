@@ -7,7 +7,7 @@ from numpy.typing import NDArray
 import pandas as pd
 from scipy import ndimage as nd
 import cv2
-import pytesseract
+from rapidocr import EngineType, RapidOCR, LangDet, LangRec
 from tifffile import imread, imwrite, TiffFile
 from loguru import logger
 from tqdm import tqdm
@@ -37,6 +37,16 @@ def main(
     # img_index = int(input('Select image: '))
     metadata = []
     metadata_path = output_path / "metadata.csv"
+    OCRengine = RapidOCR(params={
+        "Det.engine_type": EngineType.TORCH,
+        "Det.lang_type": LangDet.EN,
+        "Cls.engine_type": EngineType.TORCH,
+        "Cls.lang_type": LangDet.CH,
+        "Rec.engine_type": EngineType.TORCH,
+        "Rec.lang_type": LangRec.EN,
+        "EngineConfig.torch.use_cuda": True,  # 使用 torch GPU 版推理
+        "EngineConfig.torch.cuda_ep_cfg.device_id": 0,  # 指定GPU id
+    })
     for img_index, img_path in tqdm(enumerate(img_list), total=len(img_list), desc="Dataset Generation", unit="file"):
         # Select image and load it
         logger.info(f"Selected image: {img_path.name}")
@@ -60,10 +70,14 @@ def main(
             bh = black_bar.shape[0]
             bottom_8u = cv2.normalize(src=black_bar, dst=None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX).astype(np.uint8) # pyright: ignore[reportArgumentType, reportCallIssue]
             _, binary = cv2.threshold(bottom_8u, 200, 255, cv2.THRESH_BINARY)
-            text = pytesseract.image_to_string(binary, config='--psm 6')
-            scale_match = re.search(r'(\d+\.?\d*)\s*([uµ]m|nm)', text, re.IGNORECASE)
-            bar_value = float(scale_match.group(1)) # type: ignore
-            unit = scale_match.group(2).lower() # type: ignore
+            ocrres = OCRengine(binary, use_det=False, use_cls=False, use_rec=True)
+            # ocrres.vis("vis_result.jpg")
+            text = ocrres.txts[0]
+            logger.debug(text)
+            pattern = re.compile(r'\d{1,2}:\d{1,2}:(\d{1,2})\s*(\d*\.?\d+)\s*([uμ]m|nm)', re.IGNORECASE)
+            scale_match = pattern.search(text)
+            bar_value = float(scale_match.group(2)) # type: ignore
+            unit = scale_match.group(3).lower() # type: ignore
             if 'nm' in unit:
                 physical_nm = bar_value
             else:  # µm / um

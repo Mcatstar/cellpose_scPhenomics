@@ -20,9 +20,9 @@ dependencies = [
     "cellpose (<4.0)",
     "typer (>=0.27.2,<0.28.0)",
     "dotenv (>=0.9.9,<0.10.0)",
-    "pytesseract (>=0.3.13,<0.4.0)",
     "scikit-learn (>=1.9.1,<2.0.0)",
     "pyyaml>=6.0.3",
+    "rapidocr>=3.9.2",
 ]
 
 [project.scripts]

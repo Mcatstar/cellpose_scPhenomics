@@ -144,8 +144,8 @@ class MitoPredictor(EmpanadaPredictor):
 
     def __init__(self, gpu: bool = True):
         super().__init__(
-            model_path=MODELS_DIR / "MitoNet_v1_mini.pth",
-            config_path=MODELS_CONFIGS_DIR / "MitoNet_v1_mini.yaml",
+            model_path=MODELS_DIR / "MitoNet_v1.pth",
+            config_path=MODELS_CONFIGS_DIR / "MitoNet_v1.yaml",
             gpu=gpu,
         )
 
@@ -165,7 +165,7 @@ class LipidPredictor(EmpanadaPredictor):
 def main(
     infer_path: Path = INTERIM_DATA_DIR,
     output_path: Path = EXTERNAL_DATA_DIR,
-    gpu: bool = False,
+    gpu: bool = True,
 ):
     output_path.mkdir(parents=True, exist_ok=True)
 
