@@ -1,0 +1,15 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "extraPaths": ["."],
+  "exclude": [
+    ".venv",
+    "**/__pycache__",
+    "data",
+    "models",
+    "notebooks",
+    "references",
+    "reports"
+  ],
+  "typeCheckingMode": "standard"
+}

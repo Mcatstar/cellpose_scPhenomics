@@ -17,73 +17,81 @@ from empanada.inference.tracker import InstanceTracker
 from empanada.inference.postprocess import factor_pad
 from empanada.inference.patterns import *
 
-from napari.qt.threading import thread_worker
+from empanada_core.utils import Preprocessor, load_model_to_device
 
-from empanada_napari.utils import Preprocessor, load_model_to_device
-
-MODEL_DIR = os.path.join(os.path.expanduser('~'), '.empanada')
+MODEL_DIR = os.path.join(os.path.expanduser("~"), ".empanada")
 torch.hub.set_dir(MODEL_DIR)
 
-def main_worker(gpu, volume, axis_name, rle_stack, rle_out, config):
-    config['gpu'] = gpu
-    rank = gpu
-    axis = config['axes'][axis_name]
 
-    dist.init_process_group(backend='nccl', init_method='tcp://localhost:10001',
-                            world_size=config['world_size'], rank=rank)
+def main_worker(gpu, volume, axis_name, rle_stack, rle_out, config):
+    config["gpu"] = gpu
+    rank = gpu
+    axis = config["axes"][axis_name]
+
+    dist.init_process_group(
+        backend="nccl",
+        init_method="tcp://localhost:10001",
+        world_size=config["world_size"],
+        rank=rank,
+    )
 
     engine_cls = PanopticDeepLabRenderEngine
-    model = load_model_to_device(config['model_url'], torch.device(f'cuda:{gpu}'))
+    model = load_model_to_device(config["model_url"], torch.device(f"cuda:{gpu}"))
 
-    preprocessor = Preprocessor(**config['norms'])
+    preprocessor = Preprocessor(**config["norms"])
 
     # create the dataloader
     shape = volume.shape
-    upsampling = config['inference_scale']
+    upsampling = config["inference_scale"]
     dataset = VolumeDataset(volume, axis, preprocessor, scale=upsampling)
     sampler = DistributedSampler(dataset, shuffle=False)
     dataloader = DataLoader(
-        dataset, batch_size=1, shuffle=False, pin_memory=True,
-        drop_last=False, num_workers=0, sampler=sampler
+        dataset,
+        batch_size=1,
+        shuffle=False,
+        pin_memory=True,
+        drop_last=False,
+        num_workers=0,
+        sampler=sampler,
     )
 
     # if in main process, create matchers and process
     if rank == 0:
-        thing_list = config['engine_params']['thing_list']
-        matchers = create_matchers(thing_list, **config['matcher_params'])
+        thing_list = config["engine_params"]["thing_list"]
+        matchers = create_matchers(thing_list, **config["matcher_params"])
 
         queue = mp.Queue()
         matcher_out, matcher_in = mp.Pipe()
         matcher_args = (
-            matchers, queue, rle_stack, matcher_in,
-            config['engine_params']['confidence_thr'],
-            config['engine_params']['median_kernel_size'],
-            config['engine_params']['labels'],
-            config['engine_params']['label_divisor'],
-            thing_list
+            matchers,
+            queue,
+            rle_stack,
+            matcher_in,
+            config["engine_params"]["confidence_thr"],
+            config["engine_params"]["median_kernel_size"],
+            config["engine_params"]["labels"],
+            config["engine_params"]["label_divisor"],
+            thing_list,
         )
-        matcher_proc = mp.Process(
-            target=forward_multigpu,
-            args=matcher_args
-        )
+        matcher_proc = mp.Process(target=forward_multigpu, args=matcher_args)
         matcher_proc.start()
 
     # create the inference engine
-    inference_engine = engine_cls(model, **config['engine_params'])
+    inference_engine = engine_cls(model, **config["engine_params"])
 
     n = 0
     iterator = dataloader if rank != 0 else tqdm(dataloader, total=len(dataloader))
     step = dist.get_world_size()
     total_len = shape[axis]
     for batch in iterator:
-        image = batch['image'].to(f'cuda:{gpu}', non_blocking=True)
-        h, w = batch['size']
-        image = factor_pad(image, config['padding_factor'])
+        image = batch["image"].to(f"cuda:{gpu}", non_blocking=True)
+        h, w = batch["size"]
+        image = factor_pad(image, config["padding_factor"])
 
         output = inference_engine.infer(image)
-        sem = output['sem']
+        sem = output["sem"]
         instance_cells = inference_engine.get_instance_cells(
-            output['ctr_hmp'], output['offsets'], upsampling
+            output["ctr_hmp"], output["offsets"], upsampling
         )
 
         # get median semantic seg
@@ -101,22 +109,21 @@ def main_worker(gpu, volume, axis_name, rle_stack, rle_out, config):
         if rank == 0:
             # run the matching process
             for sem, cells in zip(sems, instance_cells):
-                queue.put(
-                    (sem.cpu()[..., :h, :w], cells.cpu()[..., :h, :w])
-                )
+                queue.put((sem.cpu()[..., :h, :w], cells.cpu()[..., :h, :w]))
 
         del sems, instance_cells
 
     # pass None to queue to mark the end of inference
     if rank == 0:
-        queue.put(('finish', 'finish'))
+        queue.put(("finish", "finish"))
         rle_stack = matcher_out.recv()[0]
         matcher_proc.join()
 
-        print('Finished matcher')
+        print("Finished matcher")
 
         # send the rle stack back to the main process
         rle_out.put([rle_stack])
+
 
 class MultiGPUEngine3d:
     def __init__(
@@ -137,43 +144,45 @@ class MultiGPUEngine3d:
         semantic_only=False,
         store_url=None,
         chunk_size=(256, 256, 256),
-        save_panoptic=False
+        save_panoptic=False,
     ):
         # check whether GPU is available
         if not torch.cuda.device_count() > 1:
-            raise Exception(f'MultiGPU inference requires multiple GPUs! Run torch.cuda.device_count()')
+            raise Exception(
+                f"MultiGPU inference requires multiple GPUs! Run torch.cuda.device_count()"
+            )
 
-        self.labels = model_config['labels']
+        self.labels = model_config["labels"]
         self.config = model_config
-        self.config['model_url'] = model_config['model']
+        self.config["model_url"] = model_config["model"]
 
-        self.config['engine_params'] = {}
+        self.config["engine_params"] = {}
         if semantic_only:
-            self.config['engine_params']['thing_list'] = []
+            self.config["engine_params"]["thing_list"] = []
         else:
-            self.config['engine_params']['thing_list'] = self.config['thing_list']
+            self.config["engine_params"]["thing_list"] = self.config["thing_list"]
 
-        self.config['inference_scale'] = inference_scale
-        self.config['engine_params']['labels'] = self.labels
-        self.config['engine_params']['label_divisor'] = label_divisor
-        self.config['engine_params']['median_kernel_size'] = median_kernel_size
-        self.config['engine_params']['stuff_area'] = stuff_area
-        self.config['engine_params']['void_label'] = void_label
-        self.config['engine_params']['nms_threshold'] = nms_threshold
-        self.config['engine_params']['nms_kernel'] = nms_kernel
-        self.config['engine_params']['confidence_thr'] = confidence_thr
-        self.config['engine_params']['coarse_boundaries'] = not fine_boundaries
+        self.config["inference_scale"] = inference_scale
+        self.config["engine_params"]["labels"] = self.labels
+        self.config["engine_params"]["label_divisor"] = label_divisor
+        self.config["engine_params"]["median_kernel_size"] = median_kernel_size
+        self.config["engine_params"]["stuff_area"] = stuff_area
+        self.config["engine_params"]["void_label"] = void_label
+        self.config["engine_params"]["nms_threshold"] = nms_threshold
+        self.config["engine_params"]["nms_kernel"] = nms_kernel
+        self.config["engine_params"]["confidence_thr"] = confidence_thr
+        self.config["engine_params"]["coarse_boundaries"] = not fine_boundaries
 
-        self.axes = {'xy': 0, 'xz': 1, 'yz': 2}
-        self.config['axes'] = self.axes
-        self.config['matcher_params'] = {}
+        self.axes = {"xy": 0, "xz": 1, "yz": 2}
+        self.config["axes"] = self.axes
+        self.config["matcher_params"] = {}
 
-        self.config['matcher_params']['label_divisor'] = label_divisor
-        self.config['matcher_params']['merge_iou_thr'] = 0.25
-        self.config['matcher_params']['merge_ioa_thr'] = 0.25
-        self.config['force_connected'] = force_connected
+        self.config["matcher_params"]["label_divisor"] = label_divisor
+        self.config["matcher_params"]["merge_iou_thr"] = 0.25
+        self.config["matcher_params"]["merge_ioa_thr"] = 0.25
+        self.config["force_connected"] = force_connected
 
-        self.config['world_size'] = torch.cuda.device_count()
+        self.config["world_size"] = torch.cuda.device_count()
 
         self.min_size = min_size
         self.min_extent = min_extent
@@ -181,14 +190,14 @@ class MultiGPUEngine3d:
         self.save_panoptic = save_panoptic
         self.chunk_size = chunk_size
         if store_url is not None:
-            self.zarr_store = zarr.open(store_url, mode='w')
+            self.zarr_store = zarr.open_group(store_url, mode="w")
         else:
             self.zarr_store = None
 
         self.dtype = np.int32
 
     def create_trackers(self, shape3d, axis_name):
-        label_divisor = self.config['engine_params']['label_divisor']
+        label_divisor = self.config["engine_params"]["label_divisor"]
         trackers = [
             InstanceTracker(label, label_divisor, shape3d, axis_name)
             for label in self.labels
@@ -199,9 +208,12 @@ class MultiGPUEngine3d:
         # faster IO with chunking only along
         # the given axis, orthogonal viewing is slow though
         if self.zarr_store is not None and self.save_panoptic:
-            stack = self.zarr_store.create_dataset(
-                f'panoptic_{axis_name}', shape=shape3d,
-                dtype=self.dtype, chunks=self.chunk_size, overwrite=True
+            stack = self.zarr_store.create_array(
+                f"panoptic_{axis_name}",
+                shape=shape3d,
+                dtype=self.dtype,
+                chunks=self.chunk_size,
+                overwrite=True,
             )
         elif self.save_panoptic:
             # we'll use uint32 for in memory segs
@@ -212,7 +224,7 @@ class MultiGPUEngine3d:
         return stack
 
     def infer_on_axis(self, volume, axis_name):
-        ctx = mp.get_context('spawn')
+        ctx = mp.get_context("spawn")
 
         # create a pipe to get rle stack from main GPU process
         rle_out = ctx.Queue()
@@ -220,32 +232,37 @@ class MultiGPUEngine3d:
         # launch the GPU processes
         rle_stack = []
         context = mp.spawn(
-            main_worker, nprocs=self.config['world_size'],
+            main_worker,
+            nprocs=self.config["world_size"],
             args=(volume, axis_name, rle_stack, rle_out, self.config),
-            join=False
+            join=False,
         )
 
         # NOTE: when using the spawn context, error messages either
         # don't show up or are unhelpful, comment out the lines above
         # and use this spawn command for all debugging
-        #mp.spawn(
+        # mp.spawn(
         #    main_worker, nprocs=self.config['world_size'],
         #    args=(volume, axis_name, [], [], self.config)
-        #)
+        # )
 
         # grab the zarr stack that was filled in
         rle_stack = rle_out.get()[0]
         context.join()
 
         # run backward matching and tracking
-        print('Propagating labels backward...')
-        axis = self.config['axes'][axis_name]
-        matchers = create_matchers(self.config['thing_list'], **self.config['matcher_params'])
+        print("Propagating labels backward...")
+        axis = self.config["axes"][axis_name]
+        matchers = create_matchers(
+            self.config["thing_list"], **self.config["matcher_params"]
+        )
         trackers = self.create_trackers(volume.shape, axis_name)
         stack = self.create_panoptic_stack(axis_name, volume.shape)
 
         axis_len = volume.shape[axis]
-        for index,rle_seg in tqdm(backward_matching(rle_stack, matchers, axis_len), total=axis_len):
+        for index, rle_seg in tqdm(
+            backward_matching(rle_stack, matchers, axis_len), total=axis_len
+        ):
             update_trackers(rle_seg, index, trackers)
 
         finish_tracking(trackers)
@@ -254,7 +271,7 @@ class MultiGPUEngine3d:
             filters.remove_pancakes(tracker, min_span=self.min_extent)
 
         if stack is not None:
-            print('Writing panoptic segmentation.')
+            print("Writing panoptic segmentation.")
             fill_panoptic_volume(stack, trackers)
 
         return stack, trackers

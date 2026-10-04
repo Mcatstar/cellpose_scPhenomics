@@ -25,6 +25,9 @@ dependencies = [
     "rapidocr>=3.9.2",
     "seaborn>=0.13.2",
     "albumentations>=2.0.8",
+    "zarr>=3.4.0",
+    "dask>=2026.8.0",
+    "cztile>=2.0.0",
 ]
 
 [project.scripts]
