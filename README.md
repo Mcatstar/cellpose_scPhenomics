@@ -74,7 +74,7 @@ Cllpose-based single-cell phenomics pipeline for microscopy imaging.
 
 | 层次 | 指标来源 | 具体指标 |
 |---|---|---|
-| **A. 全局计数** | 三篇共有 | Mito/LD 总数、总面积、平均面积、总周长 |
+| **A. 全局计数** | 共有 | Mito/LD 总数、总面积、平均面积、总周长 |
 | **B. 形态参数** | 人肝活检 | 面积、周长、圆度、长宽比、圆度、实度 |
 | **C. 伸长因子** | DeepContact | perimeter²/(4π×area) |
 | **D. 大小分类** | T2DM-MASLD | LD: <2 μm vs >2 μm |
@@ -82,9 +82,6 @@ Cllpose-based single-cell phenomics pipeline for microscopy imaging.
 | **F. 接触比例** | DeepContact + T2DM | 接触长度/Mito周长、接触长度/LD周长、接触Mito数/总Mito数 |
 | **G. PDM/CM分类** | T2DM + 人肝活检 | 按是否接触LD分类，分别统计形态 |
 | **H. 接触模式** | T2DM | 单Mito-单LD vs 多Mito-多LD成簇 |
-| **I. 相关性** | 人肝活检 | PDM计数 vs LD计数、形态与接触的相关 |
-| **J. 效应量** | 人肝活检 | Cohen's d（PDM vs CM） |
-
 ---
 
 ## 输出文件说明
@@ -116,10 +113,10 @@ Cllpose-based single-cell phenomics pipeline for microscopy imaging.
 ## 与现有工作流的衔接
 
 ```
-EmpanadaPredict.py  →  *_mito_masks_pred.tif
-                    →  *_ld_masks_pred.tif
+→  *_mito_masks(_pred).tif
+                    →  *_ld_masks(_pred).tif
                               ↓
-analyze_mito_ld.py  →  global_metrics.csv
+postproc.py  →  global_metrics.csv
                     →  mito_morphology.csv
                     →  ld_morphology.csv
                     →  contact_events.csv
