@@ -81,13 +81,13 @@ def main(
     io.logger_setup()
 
     logger.info("Training mito model ...")
-    MitoTrainer(train_path, test_path, MODELS_DIR, gpu).train(
+    MitoTrainer(train_path/"mito", test_path/"mito", MODELS_DIR, gpu).train(
         n_epochs=n_epochs, learning_rate=learning_rate,
         batch_size=batch_size, normalize=normalize,
     )
 
     logger.info("Training lipid model ...")
-    LipidTrainer(train_path, test_path, MODELS_DIR, gpu).train(
+    LipidTrainer(train_path/"ld", test_path/"ld", MODELS_DIR, gpu).train(
         n_epochs=n_epochs, learning_rate=learning_rate,
         batch_size=batch_size, normalize=normalize,
     )

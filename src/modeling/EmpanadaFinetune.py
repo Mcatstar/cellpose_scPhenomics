@@ -3,8 +3,9 @@
 两个子命令:
 
 ``prepare``
-    把 ``*_img.tif`` + ``*_mito_masks.tif`` 这类成对数据, 转成 empanada 数据集
-    要求的目录结构 ``<train_dir>/<source>/{images,masks}/*.tiff``。
+    把 ``src/dataset.py`` 生成的 ``data/processed/<split>/<source>/`` 下成对数据,
+    转成 empanada 数据集要求的 ``<dest>/<source>/{images,masks}/*.tiff``。
+    ``--split train`` 落到 ``--train-dir``, ``--split test`` 落到 ``--eval-dir``。
 
 ``finetune``
     组装配置并微调。加 ``--check-only`` 只做校验与计划打印, **不会加载任何模型**,
@@ -86,23 +87,13 @@ def to_uint8(image: NDArray) -> NDArray[np.uint8]:
     )
 
 
-def warn_if_binary(mask: NDArray, mask_path: Path) -> None:
-    """标注看起来是 0/1 二值图时告警 (会被当成单个实例)。"""
-    n_positive = np.unique(mask[mask > 0]).size
-    if n_positive <= 1:
-        logger.warning(
-            f"{mask_path.name} 只有 {n_positive} 个非零标号, 看起来是二值图。"
-            f"empanada 需要每个实例一个独立整数 ID"
-        )
-
-
 class EmpanadaFinetuner:
     """用 empanada 微调一个已注册的模型。
 
     子类只需覆盖下面几个类属性, 就能换成别的目标。
     """
 
-    name: str = "empanada"
+    source: str = "mito"
     base_model: str = "MitoNet_v1"
     weights_file: str = "MitoNet_v1.pth"
     image_pattern: str = "*_img.tif"
@@ -115,9 +106,10 @@ class EmpanadaFinetuner:
         model_name: str | None = None,
         finetune_layer: str = "all",
         iterations: int = 2000,
-        patch_size: int = 256,
+        patch_size: int = 512,
         eval_dir: Path | None = None,
         custom_config: str = "default config",
+        batch_size: int | None = None,
     ) -> None:
         self.train_dir = Path(train_dir)
         self.model_dir = Path(model_dir)
@@ -127,15 +119,30 @@ class EmpanadaFinetuner:
         self.patch_size = patch_size
         self.eval_dir = None if eval_dir is None else Path(eval_dir)
         self.custom_config = custom_config
+        self.batch_size = batch_size
 
         # check() 组装好的配置, run() 直接复用
         self.config: dict[str, Any] | None = None
 
-    def prepare(self, raw_dir: Path) -> int:
-        """把 raw_dir 下成对的 img/mask 写进 ``self.train_dir/<name>/``。
+    def prepare(self, split: str = "train") -> int:
+        """把 ``data/processed/<split>/<source>/`` 下的 img/mask 转成 empanada 结构。
+
+        源目录由 ``src/dataset.py`` 生成, 形如
+        ``data/processed/train/mito/<name>_img.tif`` + ``<name>_mito_masks.tif``。
+        结果写到 ``<dest>/<source>/{images,masks}/*.tiff``, 其中 ``split="train"``
+        用 ``self.train_dir``、``split="test"`` 用 ``self.eval_dir``。
 
         返回成功写入的样本对数。这一步不接触模型。
         """
+        raw_dir = PROCESSED_DATA_DIR / split / self.source
+        dest = self.train_dir if split == "train" else self.eval_dir
+        if dest is None:
+            logger.error(f"split={split} 需要 eval_dir 作为输出目录")
+            raise typer.Exit(code=1)
+        if not raw_dir.is_dir():
+            logger.error(f"{raw_dir} 不存在, 先跑 src/dataset.py 生成 processed 数据")
+            raise typer.Exit(code=1)
+
         img_paths = sorted(raw_dir.glob(self.image_pattern))
         logger.info(f"在 {raw_dir} 找到 {len(img_paths)} 张 {self.image_pattern}")
         if not img_paths:
@@ -159,14 +166,21 @@ class EmpanadaFinetuner:
                 )
                 continue
 
-            warn_if_binary(mask, mask_path)
+            # 二值图会被整张当成一个实例
+            n_positive = np.unique(mask[mask > 0]).size
+            if n_positive <= 1:
+                logger.warning(
+                    f"{mask_path.name} 只有 {n_positive} 个非零标号, 看起来是二值图; "
+                    f"empanada 需要每个实例一个独立整数 ID"
+                )
+
             export_batch_segs(
                 image=image,
                 mask=mask,
                 image_name=base,
                 export_type="2D images",
-                dataset_name=self.name,
-                save_dir=str(self.train_dir),
+                dataset_name=self.source,
+                save_dir=str(dest),
                 grayscale=True,
             )
             written += 1
@@ -175,7 +189,7 @@ class EmpanadaFinetuner:
             logger.error("没有任何样本被写入, 退出")
             raise typer.Exit(code=1)
 
-        logger.success(f"写入 {written} 对样本到 {self.train_dir / self.name}")
+        logger.success(f"写入 {written} 对样本到 {dest / self.source}")
         return written
 
     def check(self) -> FinetunePlan:
@@ -208,6 +222,7 @@ class EmpanadaFinetuner:
             iterations=self.iterations,
             patch_size=self.patch_size,
             custom_config=self.custom_config,
+            batch_size=self.batch_size,
         )
 
         # 有本地权重就用本地, 避免训练时从 zenodo 下载
@@ -269,14 +284,14 @@ class EmpanadaFinetuner:
 
 
 class MitoFinetuner(EmpanadaFinetuner):
-    name = "mito"
+    source = "mito"
     base_model = "MitoNet_v1"
     weights_file = "MitoNet_v1.pth"
     mask_suffix = "_mito_masks.tif"
 
 
 class LipidFinetuner(EmpanadaFinetuner):
-    name = "lipid"
+    source = "ld"
     base_model = "DropNet_base_v1"
     weights_file = "DropNet_base_v1.pth"
     mask_suffix = "_ld_masks.tif"
@@ -299,13 +314,29 @@ def lookup(target: str) -> type[EmpanadaFinetuner]:
 @app.command()
 def prepare(
     target: str = "mito",
-    raw_dir: Path = PROCESSED_DATA_DIR / "train",
-    out_dir: Path = PROCESSED_DATA_DIR / "finetune",
+    split: str = "train",
+    train_dir: Path = PROCESSED_DATA_DIR / "finetune",
+    eval_dir: Path = PROCESSED_DATA_DIR / "eval",
 ) -> None:
-    """把成对的 img/mask 转成 empanada 数据集目录结构。"""
-    finetuner = lookup(target)(train_dir=out_dir, model_dir=MODELS_DIR)
-    finetuner.prepare(raw_dir)
-    logger.success(f"微调时 --train-dir 传 {out_dir}")
+    """把 processed/<split>/<source>/ 的成对 img/mask 转成 empanada 数据集结构。
+
+    split=train 落到 --train-dir, split=test 落到 --eval-dir, 两个目录都能直接
+    交给 finetune 子命令。
+    """
+    if split not in ("train", "test"):
+        logger.error(f"split 只能是 train 或 test, 收到 {split}")
+        raise typer.Exit(code=1)
+
+    finetuner = lookup(target)(
+        train_dir=train_dir,
+        model_dir=MODELS_DIR,
+        eval_dir=eval_dir,
+    )
+    finetuner.prepare(split)
+
+    flag = "--train-dir" if split == "train" else "--eval-dir"
+    dest = train_dir if split == "train" else eval_dir
+    logger.success(f"finetune: {flag} -> {dest}")
 
 
 @app.command()
@@ -319,12 +350,14 @@ def finetune(
     patch_size: int = 256,
     eval_dir: Path | None = None,
     custom_config: str = "default config",
+    batch_size: int | None = None,
     register: bool = False,
     check_only: bool = False,
 ) -> None:
     """微调一个已注册的 empanada 模型; --check-only 不加载模型。
 
     设备由 empanada 自己选 (有 CUDA 就用 cuda:0, 否则 cpu), 这里没有开关。
+    标注图不足模板默认的 16 张时, 用 --batch-size 调小。
     """
     finetuner = lookup(target)(
         train_dir=train_dir,
@@ -335,6 +368,7 @@ def finetune(
         patch_size=patch_size,
         eval_dir=eval_dir,
         custom_config=custom_config,
+        batch_size=batch_size,
     )
 
     finetuner.check()

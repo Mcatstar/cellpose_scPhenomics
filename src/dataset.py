@@ -8,12 +8,14 @@ import pandas as pd
 from scipy import ndimage as nd
 import cv2
 from rapidocr import EngineType, RapidOCR, LangDet, LangRec
+from sklearn.model_selection import train_test_split
+import shutil
 from tifffile import imread, imwrite, TiffFile
 from loguru import logger
 from tqdm import tqdm
 import typer
 
-from src.config import EXTERNAL_DATA_DIR, IMAGES_DATA_DIR, INTERIM_DATA_DIR
+from src.config import EXTERNAL_DATA_DIR, IMAGES_DATA_DIR, INTERIM_DATA_DIR, PROCESSED_DATA_DIR
 
 app = typer.Typer()
 
@@ -44,13 +46,15 @@ def main(
         "Cls.lang_type": LangDet.CH,
         "Rec.engine_type": EngineType.TORCH,
         "Rec.lang_type": LangRec.EN,
-        "EngineConfig.torch.use_cuda": True,  # 使用 torch GPU 版推理
-        "EngineConfig.torch.cuda_ep_cfg.device_id": 0,  # 指定GPU id
+        # "EngineConfig.torch.use_cuda": True,  # 使用 torch GPU 版推理
+        # "EngineConfig.torch.cuda_ep_cfg.device_id": 0,  # 指定GPU id
     })
+    mito_labeled, ld_labeled, inference_only = [], [], []
     for img_index, img_path in tqdm(enumerate(img_list), total=len(img_list), desc="Dataset Generation", unit="file"):
         # Select image and load it
         logger.info(f"Selected image: {img_path.name}")
         logger.info(f"Image path: {img_path}")
+        # process image and extract metadata
         with TiffFile(img_path) as tif:
             img = tif.asarray()
             page = tif.pages.first
@@ -120,8 +124,68 @@ def main(
         logger.info(
             f"Successfully processing the No.{img_index + 1} image in total {len(img_list)}"
         )
+
+        # processing labels and generate masks
+        mito_labels = EXTERNAL_DATA_DIR / f"{img_path.parent.name}-{img_path.stem}_mito_labels.tif"
+        ld_labels = EXTERNAL_DATA_DIR / f"{img_path.parent.name}-{img_path.stem}_ld_labels.tif"
+        if mito_labels.exists():
+            mito_mask = imread(mito_labels)[: effective_img.shape[0], : effective_img.shape[1]]
+            imwrite(
+                output_path / f"{img_path.parent.name}-{img_path.stem}_mito_masks.tif",
+                mito_mask,
+            )
+            mito_labeled.append(f"{img_path.parent.name}-{img_path.stem}")
+        if ld_labels.exists():
+            ld_mask = imread(ld_labels)[: effective_img.shape[0], : effective_img.shape[1]]
+            imwrite(
+                output_path / f"{img_path.parent.name}-{img_path.stem}_ld_masks.tif",
+                ld_mask,
+            )
+            ld_labeled.append(f"{img_path.parent.name}-{img_path.stem}")
+        if not mito_labels.exists() and not ld_labels.exists():
+            inference_only.append(f"{img_path.parent.name}-{img_path.stem}")
+
     df = pd.DataFrame(metadata)
     df.to_csv(metadata_path, index=False)
+
+    logger.debug(f"mito_labeled: {mito_labeled}")
+    logger.debug(f"ld_labeled: {ld_labeled}")
+    logger.debug(f"inference_only: {inference_only}")
+
+     # splite into train/test sets
+    train_ratio = 0.8
+    mito_train, mito_test = train_test_split(mito_labeled, train_size=train_ratio, random_state=42)
+    ld_train, ld_test = train_test_split(ld_labeled, train_size=train_ratio, random_state=42)
+    rows = (
+        [{"split": "mito_train", "name": n} for n in mito_train] +
+        [{"split": "mito_test",  "name": n} for n in mito_test] +
+        [{"split": "ld_train",   "name": n} for n in ld_train] +
+        [{"split": "ld_test",    "name": n} for n in ld_test] +
+        [{"split": "infer",      "name": n} for n in inference_only]
+    )
+    pd.DataFrame(rows).to_csv(output_path / "train_test_split.csv", index=False)
+    # save train/test sets
+    config = {
+        ("mito", "train"): mito_train,
+        ("mito", "test"):  mito_test,
+        ("ld",   "train"): ld_train,
+        ("ld",   "test"):  ld_test,
+    }
+
+    for (dtype, split), names in config.items():
+        dst = PROCESSED_DATA_DIR / split / dtype
+        dst.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            for src_suffix, dst_suffix in ((f"{dtype}_masks", f"{dtype}_masks"),):
+                shutil.copy2(output_path / f"{name}_img.tif", dst / f"{name}_img.tif")
+                shutil.copy2(output_path / f"{name}_{src_suffix}.tif", dst / f"{name}_{dst_suffix}.tif")
+
+    # inference 单独处理（只复制 img）
+    infer_dst = PROCESSED_DATA_DIR / "infer"
+    infer_dst.mkdir(parents=True, exist_ok=True)
+    for name in inference_only:
+        shutil.copy2(output_path / f"{name}_img.tif", infer_dst / f"{name}_img.tif")
+    
 
     logger.success("Processing dataset complete.")
     # -----------------------------------------

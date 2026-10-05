@@ -539,9 +539,14 @@ def build_finetune_config(
     iterations,
     patch_size,
     custom_config,
+    batch_size=None,
 ):
     """Assemble a finetuning config dict from the same parameters the napari
     widget collected. Returns the config passed to main().
+
+    ``batch_size`` overrides TRAIN.batch_size from the template. It is applied
+    before the epoch arithmetic below, so epochs and save_freq stay consistent
+    with the effective batch size.
     """
     train_dir = str(train_dir)
     model_dir = str(model_dir)
@@ -557,6 +562,9 @@ def build_finetune_config(
         config = load_config(custom_config)
     else:
         config = load_config(MAIN_CONFIG)
+
+    if batch_size is not None:
+        config["TRAIN"]["batch_size"] = int(batch_size)
 
     # load the model config
     model_config = load_config(get_configs()[finetune_model])

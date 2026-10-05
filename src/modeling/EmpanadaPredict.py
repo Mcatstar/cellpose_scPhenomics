@@ -30,7 +30,7 @@ from tqdm import tqdm
 from empanada.config_loaders import load_config
 from empanada_core.inference import Engine2d
 from empanada_core.utils import get_configs
-from src.config import EXTERNAL_DATA_DIR, INTERIM_DATA_DIR, MODELS_DIR
+from src.config import MODELS_DIR, PRED_DATA_DIR, PROCESSED_DATA_DIR
 
 app = typer.Typer()
 
@@ -143,8 +143,8 @@ class LipidPredictor(EmpanadaPredictor):
 
 @app.command()
 def main(
-    infer_path: Path = INTERIM_DATA_DIR,
-    output_path: Path = EXTERNAL_DATA_DIR,
+    infer_path: Path = PROCESSED_DATA_DIR / "infer",
+    output_path: Path = PRED_DATA_DIR,
     pattern: str = "*_img.tif",
     tile_size: int = 0,
     confidence_thr: float | None = None,
@@ -152,6 +152,10 @@ def main(
     gpu: bool = True,
 ) -> None:
     """对 infer_path 下所有匹配 pattern 的图跑 mito + lipid 两套模型。
+
+    infer_path 默认是 ``src/dataset.py`` 组装出来的 ``data/processed/infer``;
+    输出写到 ``data/processed/predictions``, 命名与 dataset 阶段的
+    ``<name>_mito_masks.tif`` 对齐, 即 ``<name>_mito_masks_pred.tif``。
 
     tile_size=0 表示整图一次推理; 图很大 (例如 2563x3296) 时设成 1024 或 512
     可以显著降低显存/内存峰值。
@@ -183,7 +187,7 @@ def main(
         masks_mito = mito_predictor.predict(img)
         masks_lipid = lipid_predictor.predict(img)
 
-        stem = img_path.stem.replace("_img", "")
+        stem = img_path.stem.removesuffix("_img")
         imwrite(output_path / f"{stem}_mito_masks_pred.tif", masks_mito)
         imwrite(output_path / f"{stem}_ld_masks_pred.tif", masks_lipid)
         logger.info(f"saved masks for {img_path.name}")

@@ -17,14 +17,22 @@ Cellpose-based single-cell phenomics pipeline for microscopy imaging.
 │
 ├── data
 │   ├── raw                     <- 原始数据
-│   ├── images                  <- EM 图像 (C / M / T 三组)
-│   ├── interim                 <- 中间数据 (裁剪、归一化)
-│   ├── external                <- 第三方数据; 也是 Empanada 推理输出目录
+│   ├── images                  <- 原始 EM 图像 (C / M / T 三组)
+│   ├── external                <- 人工标注的 *_mito_labels.tif / *_ld_labels.tif
+│   ├── interim                 <- dataset.py 裁掉黑边后的图与掩码, 尚未装配
+│   │   ├── <group>-<stem>_img.tif
+│   │   ├── <group>-<stem>_mito_masks.tif
+│   │   ├── <group>-<stem>_ld_masks.tif
+│   │   ├── metadata.csv        <- 尺寸、放大倍率、nm/px (OCR 读标尺得到)
+│   │   └── train_test_split.csv
 │   └── processed               <- 建模数据集
-│       ├── train / test        <- Cellpose: *_img.tif + *_mito_masks.tif
-│       ├── infer               <- 仅推理样本
-│       ├── predictions         <- Cellpose 推理输出
-│       └── finetune            <- Empanada 微调数据集 (根目录, 下设 <source>/)
+│       ├── train/mito          <- *_img.tif + *_mito_masks.tif
+│       ├── train/ld            <- *_img.tif + *_ld_masks.tif
+│       ├── test/mito, test/ld  <- 同上, 8/2 划分
+│       ├── infer               <- 仅 *_img.tif
+│       ├── predictions         <- 推理输出 (Cellpose / Empanada)
+│       ├── finetune            <- Empanada 微调集, 由 prepare --split train 生成
+│       └── finetune_eval       <- Empanada 验证集, 由 prepare --split test 生成
 │
 ├── models                      <- 权重: MitoNet_v1.pth / DropNet_base_v1.pth / 微调产物
 │
@@ -55,8 +63,8 @@ Cellpose-based single-cell phenomics pipeline for microscopy imaging.
 │
 ├── src
 │   ├── config.py               <- 路径与日志配置
-│   ├── dataset.py              <- 数据整理
-│   ├── features.py             <- 划分 train/test、归档 infer
+│   ├── dataset.py              <- 裁黑边 + OCR 读标尺 + 组装 train/test/infer
+│   ├── features.py             <- (已清空, 逻辑并入 dataset.py)
 │   ├── postproc.py             <- 形态学与接触指标
 │   ├── visualize.py
 │   ├── modeling
@@ -76,15 +84,16 @@ Cellpose-based single-cell phenomics pipeline for microscopy imaging.
 
 ## 建模脚本
 
-| 脚本 | 作用 | 命令 |
-| --- | --- | --- |
-| `CellposeTrain` | Cellpose 微调 (mito + lipid) | `uv run python -m src.modeling.CellposeTrain` |
-| `CellposePredict` | Cellpose 推理 | `uv run python -m src.modeling.CellposePredict` |
-| `EmpanadaFinetune` | 准备 empanada 数据集并微调 | `uv run python -m src.modeling.EmpanadaFinetune prepare` / `finetune` |
-| `EmpanadaPredict` | Empanada 2D 推理 (mito + lipid) | `uv run python -m src.modeling.EmpanadaPredict --tile-size 1024` |
+| 脚本                 | 作用                            | 命令                                                                     |
+| -------------------- | ------------------------------- | ------------------------------------------------------------------------ |
+| `CellposeTrain`    | Cellpose 微调 (mito + lipid)    | `uv run python -m src.modeling.CellposeTrain`                          |
+| `CellposePredict`  | Cellpose 推理                   | `uv run python -m src.modeling.CellposePredict`                        |
+| `EmpanadaFinetune` | 准备 empanada 数据集并微调      | `uv run python -m src.modeling.EmpanadaFinetune prepare --split train` |
+| `EmpanadaPredict`  | Empanada 2D 推理 (mito + lipid) | `uv run python -m src.modeling.EmpanadaPredict --tile-size 1024`       |
 
 `EmpanadaFinetune` 的 `--check-only` 只做数据集校验、配置组装与 epoch 计算, **不加载任何模型**,
-适合先在跑不动模型的机器上确认环境。完整教程见文末的「Empanada 模型微调教程」。
+适合先在跑不动模型的机器上确认环境。标注图少于模板默认的 16 张时用 `--batch-size` 调小。
+完整教程见文末的「Empanada 模型微调」。
 
 ## 环境与依赖
 
@@ -191,6 +200,28 @@ uv sync          # 或 pip install.
 
 ## 3. 数据目录结构
 
+### 本项目的数据流
+
+```
+data/images/<group>/*.tif                       <- 原始 EM 图
+        │  src/dataset.py  (裁黑边 + OCR 读标尺算 nm/px)
+        ▼
+data/interim/<group>-<stem>_img.tif             <- 已裁切, 未装配
+data/interim/<group>-<stem>_{mito,ld}_masks.tif
+        │  src/dataset.py  (8/2 划分 + 按 dtype 分目录)
+        ▼
+data/processed/train/mito/   *_img.tif + *_mito_masks.tif
+data/processed/train/ld/     *_img.tif + *_ld_masks.tif
+data/processed/test/mito, test/ld, infer/
+        │  EmpanadaFinetune prepare  (补上 images/ 与 masks/ 两层)
+        ▼
+data/processed/finetune/<source>/{images,masks}/*.tiff   <- empanada 直接读
+```
+
+`prepare` 只做目录装配与格式转换，不改动 `processed/<split>/<source>/` 里的原文件。
+
+### empanada 要求的层级
+
 `empanada` 的数据集类要求这样的层级——注意 `images` 和 `masks` 必须**同级且一一对应**：
 
 ```
@@ -219,7 +250,9 @@ uv sync          # 或 pip install.
 
 ### 图像格式
 
-图像由 `cv2.imread(path, 0)` 读取，**结果一定是 8 位灰度**。本项目原始数据是 uint16（例如 `data/images/C/1-2.5-1.tif` 是 2563×3296 uint16，0–65520），OpenCV 会隐式压到 0–255。为了让缩放规则可控、可复现，建议在准备数据时自己先转成 uint8：
+图像由 `cv2.imread(path, 0)` 读取，**结果一定是 8 位灰度**。本项目原始数据是 uint16（例如 `data/images/C/1-2.5-1.tif` 是 2563×3296 uint16，0–65520），OpenCV 会隐式压到 0–255。
+
+`EmpanadaFinetune prepare` 会按 dtype 满量程线性映射显式转成 uint8，不依赖 OpenCV 的隐式行为，所以走 `prepare` 就不用自己处理。手工装配数据集时则要注意：
 
 ```python
 import numpy as np
@@ -248,22 +281,27 @@ get_model_info("MitoNet_v1")
 
 ### 路线 A：一行命令转换（推荐）
 
-如果数据已经是 `*_img.tif` + `*_mito_masks.tif` 成对放在 `data/processed/train/`，直接用
+数据已经由 `src/dataset.py` 装配成 `data/processed/train/<mito|ld>/` 时，直接用
 [`EmpanadaFinetune.py`](src/modeling/EmpanadaFinetune.py) 的 `prepare`：
 
 ```bash
-uv run python -m src.modeling.EmpanadaFinetune prepare --target mito
+# 训练集: data/processed/train/mito/ -> data/processed/finetune/mito/{images,masks}/
+uv run python -m src.modeling.EmpanadaFinetune prepare --target mito --split train
+
+# 验证集 (可选, 用于训练中途算指标): data/processed/test/mito/ -> data/processed/finetune_eval/
+uv run python -m src.modeling.EmpanadaFinetune prepare --target mito --split test
 ```
 
-它会显式把图转成 uint8、掩码转成 int32，写到：
+它会显式把图转成 uint8、掩码转成 int32，落盘为：
 
 ```
-data/processed/finetune/mito/images/*.tiff
-data/processed/finetune/mito/masks/*.tiff
+data/processed/finetune/mito/images/<name>.tiff        <- 图像与掩码同名
+data/processed/finetune/mito/masks/<name>.tiff
 ```
 
-所以 `train_dir` 传 **`data/processed/finetune`**（`<target>` 的上级，不是 `<target>` 自己）。
-掩码是 0/1 二值图时会打警告（那样整张图会被当成一个实例）。
+所以 `train_dir` 传 **`data/processed/finetune`**（`<source>` 的上级，不是 `<source>` 自己），
+验证集则用 `--eval-dir data/processed/finetune_eval`。脂滴把 `--target` 换成 `lipid`
+（源目录是 `ld`，掩码后缀 `_ld_masks.tif`）。掩码是 0/1 二值图时会打警告——那样整张图会被当成一个实例。
 
 ### 路线 B：整图当样本，手工摆放
 
@@ -301,6 +339,10 @@ data/processed/finetune/mito/mito/masks/*.tiff     # int32 标号图
 ```
 
 那么 `train_dir` 就是 `data/processed/finetune/mito`（**`dataset_name` 那一层**，不是它的上级）。
+
+> 路线 C 比路线 A 多一层（`<dataset_name>/<prefix>/`），所以两条路线算出来的 `train_dir` 不同：
+> 路线 A 是 `data/processed/finetune`，路线 C 是 `data/processed/finetune/mito`。**选一条走**，
+> 混着用会让 `_BaseDataset` 在 `finetune/mito/` 下找不到 `images/`，从而报 0 张图。
 
 - `points=[]` 表示随机取位置；也可以传入 `(n, 2)` 的坐标数组指定补丁中心（数据坐标）。
 - `metadata` 里的 `suffices` 让保存时能按位置裁掉补丁的 padding 边；不传 `metadata` 时前缀会退化成 `"unknown"`、后缀变成随机串，能跑但不便于追溯。
@@ -423,22 +465,27 @@ pan_seg = engine.infer(image_2d)        # image_2d: 2D numpy 数组
 推荐直接用 [`src/modeling/EmpanadaFinetune.py`](src/modeling/EmpanadaFinetune.py) —— 数据集准备、配置组装、epoch 守卫和注册都包好了：
 
 ```bash
-# 1. 把 data/processed/train/*_img.tif + *_mito_masks.tif 转成 empanada 数据集结构
-#    输出 data/processed/finetune/mito/{images,masks}/*.tiff (图像显式转 uint8, 掩码 int32)
-uv run python -m src.modeling.EmpanadaFinetune prepare --target mito
+# 1. 装配数据集: data/processed/train/mito/ -> data/processed/finetune/mito/{images,masks}/
+#    (图像显式转 uint8, 掩码 int32; 训练集与验证集可以分别跑一次)
+uv run python -m src.modeling.EmpanadaFinetune prepare --target mito --split train
+uv run python -m src.modeling.EmpanadaFinetune prepare --target mito --split test
 
 # 2. 校验: 数据集结构、模型配置、epochs 全部检查一遍, 不加载模型
+#    标注图少于模板默认的 16 张时加上 --batch-size
 uv run python -m src.modeling.EmpanadaFinetune finetune --iterations 2000 --check-only
 
-# 3. 确认无误后真正训练 (这一步才会加载模型)
-uv run python -m src.modeling.EmpanadaFinetune finetune --iterations 2000
+# 3. 确认无误后真正训练 (这一步才会加载模型); 有验证集就带上 --eval-dir
+uv run python -m src.modeling.EmpanadaFinetune finetune --iterations 2000 \
+    --eval-dir data/processed/finetune_eval
 
 # 4. 训练并注册到 ~/.empanada/configs/, 之后可以按名字像内置模型一样引用
 uv run python -m src.modeling.EmpanadaFinetune finetune --iterations 2000 --register
 ```
 
-脂滴把 `--target` 换成 `lipid` 即可（对应 `DropNet_base_v1` + `_ld_masks.tif`）。微调后的模型用
-[`EmpanadaPredict.py`](src/modeling/EmpanadaPredict.py) 推理，或把它的 `config_name` 指向新模型名。
+`--train-dir` 默认 `data/processed/finetune`，`--eval-dir` 只在显式传入时才启用验证。
+脂滴把 `--target` 换成 `lipid` 即可（源目录 `ld`，对应 `DropNet_base_v1` + `_ld_masks.tif`）。
+微调后的模型用 [`EmpanadaPredict.py`](src/modeling/EmpanadaPredict.py) 推理，或把它的
+`config_name` 指向新模型名。
 
 ### 等价的手写脚本
 
@@ -495,7 +542,8 @@ uv run python -m empanada_core.train <config.yaml>
 | --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | `Found 0 image subdirectories with 0 images`                  | `train_dir` 层级不对。要传 `<train_dir>/<source_dataset>/images` 中 `<train_dir>` 那一层       |
 | `ZeroDivisionError: integer division or modulo by zero`       | `epochs < 5` 导致 `save_freq == 0`。提高 `iterations`（见第 7 节）                             |
-| `Need 16 images for batch size 16, got N`                     | 图片数少于`batch_size`。加图或调小 `TRAIN.batch_size`                                            |
+| `Need 16 images for batch size 16, got N`                     | 标注图少于模板默认的 16 张。加图，或用`--batch-size N` 调小（会在 epoch 计算前生效）               |
+| `data/processed/train/mito 不存在`                            | `src/dataset.py` 还没跑，或 `--target` 与源目录不符（脂滴的源目录是 `ld` 不是 `lipid`）      |
 | 训练图与掩码对不上                                              | `_BaseDataset` 用 `images/` 和 `masks/` 两次独立 `glob` 的**下标**配对，文件名必须一致 |
 | 掩码全被当成一个实例                                            | 掩码是 0/255 二值图。要存成每个实例一个整数 ID 的标号图                                              |
 | `Must be more than 1 label class!`                            | 单类模型误用了`PanopticDataset`。检查模型配置的 `FINETUNE.dataset_class`                         |
@@ -506,18 +554,18 @@ uv run python -m empanada_core.train <config.yaml>
 
 ## 11. 相关模块索引
 
-| 模块                          | 你会用到的接口                                                                               |
-| ----------------------------- | -------------------------------------------------------------------------------------------- |
-| `src.modeling.EmpanadaFinetune` | `EmpanadaFinetuner` 基类 + `MitoFinetuner` / `LipidFinetuner`（`prepare` / `check` / `run`） |
-| `src.modeling.EmpanadaPredict`  | `EmpanadaPredictor` 基类 + `MitoPredictor` / `LipidPredictor`、`decode_instances`       |
-| `empanada_core.finetune`    | `get_model_info`、`build_finetune_config`、`run_finetuning`、`finetune_and_register` |
-| `empanada_core.train`       | `build_train_config`、`run_training`、`train_and_register`（从零训练/多类训练）        |
-| `empanada_core.patches`     | `pick_patches`、`store_dataset`、`patch_suffices`、`flipbook_suffices`               |
-| `empanada_core.inference`   | `Engine2d`、`Engine3d`                                                                   |
-| `empanada_core.pipeline`    | `create_engine_2d`、`create_engine_3d`、ROI 裁剪、批量切片                               |
-| `empanada_core.metrics`     | `compute_pixel_metrics`、`compute_instance_metrics`                                      |
-| `empanada_core.labels`      | `morph_labels`、`merge_labels`、`split_labels`、`delete_labels`（修标注）            |
-| `empanada_core.label_stats` | `apply_label_filter`、`count_labels_*`（过滤小目标、统计）                               |
-| `empanada_core.model_io`    | `export_model`、`import_model`、`archive_model`                                        |
+| 模块                              | 你会用到的接口                                                                                              |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `src.modeling.EmpanadaFinetune` | `EmpanadaFinetuner` 基类 + `MitoFinetuner` / `LipidFinetuner`（`prepare` / `check` / `launch`） |
+| `src.modeling.EmpanadaPredict`  | `EmpanadaPredictor` 基类 + `MitoPredictor` / `LipidPredictor`、`decode_instances`                   |
+| `empanada_core.finetune`        | `get_model_info`、`build_finetune_config`、`run_finetuning`、`finetune_and_register`                |
+| `empanada_core.train`           | `build_train_config`、`run_training`、`train_and_register`（从零训练/多类训练）                       |
+| `empanada_core.patches`         | `pick_patches`、`store_dataset`、`patch_suffices`、`flipbook_suffices`                              |
+| `empanada_core.inference`       | `Engine2d`、`Engine3d`                                                                                  |
+| `empanada_core.pipeline`        | `create_engine_2d`、`create_engine_3d`、ROI 裁剪、批量切片                                              |
+| `empanada_core.metrics`         | `compute_pixel_metrics`、`compute_instance_metrics`                                                     |
+| `empanada_core.labels`          | `morph_labels`、`merge_labels`、`split_labels`、`delete_labels`（修标注）                           |
+| `empanada_core.label_stats`     | `apply_label_filter`、`count_labels_*`（过滤小目标、统计）                                              |
+| `empanada_core.model_io`        | `export_model`、`import_model`、`archive_model`                                                       |
 
 更详细的模块对照表与"与上游的语义差异"见 [`empanada_core/README.md`](empanada_core/README.md)。
