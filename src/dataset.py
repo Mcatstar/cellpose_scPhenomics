@@ -72,23 +72,43 @@ def main(
             effective_img = img[:img.shape[0] - black_bar_height, :]
             black_bar = img[img.shape[0] - black_bar_height:, :]
             bh = black_bar.shape[0]
-            bottom_8u = cv2.normalize(src=black_bar, dst=None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX).astype(np.uint8) # pyright: ignore[reportArgumentType, reportCallIssue]
+            bottom_8u = cv2.normalize(
+                src=black_bar, dst=None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX
+            ).astype(np.uint8) # type: ignore
             _, binary = cv2.threshold(bottom_8u, 200, 255, cv2.THRESH_BINARY)
-            ocrres = OCRengine(binary, use_det=False, use_cls=False, use_rec=True)
-            # ocrres.vis("vis_result.jpg")
-            text = ocrres.txts[0]
-            logger.debug(text)
-            pattern = re.compile(r'\d{1,2}:\d{1,2}:(\d{1,2})\s*(\d*\.?\d+)\s*([uμ]m|nm)', re.IGNORECASE)
-            scale_match = pattern.search(text)
-            bar_value = float(scale_match.group(2)) # type: ignore
-            unit = scale_match.group(3).lower() # type: ignore
-            if 'nm' in unit:
-                physical_nm = bar_value
-            else:  # µm / um
-                physical_nm = bar_value * 1000.0
-            col_white = np.sum(binary > 0, axis=0)
-            min_white = int(bh * 0.30)  # 刻度线至少占黑条高度的 30%
+
+            # --- OCR 同时拿 bbox 和文字 ---
+            ocrres = OCRengine(binary, use_det=True, use_cls=False, use_rec=True)
+
+            # 1) 从所有识别结果里找比例尺文本（数字 + nm/um/μm/µm）
+            scale_pattern = re.compile(r'(\d+\.?\d*)\s*(nm|um|μm|µm)', re.IGNORECASE)
+            scale_text = None
+            for t in ocrres.txts:
+                if scale_pattern.search(t):
+                    scale_text = t
+                    break
+
+            if scale_text is None:
+                logger.warning(f"未找到比例尺文本，跳过 {img_path.name}：{ocrres.txts}")
+                continue
+
+            # 2) 所有文字 bbox 生成 mask，从二值图扣掉
+            text_mask = np.zeros_like(binary)
+            for box in ocrres.boxes:
+                pts = np.asarray(box, dtype=np.int32)
+                cv2.fillPoly(text_mask, [pts], 255)
+            text_mask = cv2.dilate(text_mask, np.ones((3, 3), np.uint8), iterations=1)
+            binary_no_text = cv2.bitwise_and(binary, cv2.bitwise_not(text_mask))
+
+            # 3) 在无文字区域检测刻度线
+            col_white = np.sum(binary_no_text > 0, axis=0)
+            min_white = max(3, int(bh * 0.20))
             tick_cols = np.where(col_white > min_white)[0]
+
+            if len(tick_cols) < 2:
+                logger.warning(f"刻度线列不足，跳过 {img_path.name}")
+                continue
+
             groups, current = [], [tick_cols[0]]
             for c in tick_cols[1:]:
                 if c - current[-1] <= 3:
@@ -97,11 +117,31 @@ def main(
                     groups.append(current)
                     current = [c]
             groups.append(current)
-
+            
             tick_centers = [int(np.mean(g)) for g in groups]
+            if len(tick_centers) < 2:
+                logger.warning(f"有效刻度线组不足 2，跳过 {img_path.name}")
+                continue
+
             left_x, right_x = tick_centers[0], tick_centers[-1]
             pixel_distance = right_x - left_x
+            if pixel_distance <= 0:
+                logger.warning(f"刻度线像素距离异常：{tick_centers}")
+                continue
+            # 4) 解析物理长度
+            m = scale_pattern.search(scale_text)
+            bar_value = float(m.group(1))
+            unit = m.group(2).lower()
+            physical_nm = bar_value if unit == 'nm' else bar_value * 1000.0
             nm_per_px = physical_nm / pixel_distance
+
+            # 调试日志，跑第一张图时确认
+            logger.debug(
+                f"[{img_path.name}] scale_text={scale_text!r}, "
+                f"tick_centers={tick_centers}, pixel_distance={pixel_distance}, "
+                f"physical_nm={physical_nm}, nm_per_px={nm_per_px:.6f}"
+            )
+
             metadata.append(
                 {
                     "origin_path": str(img_path.relative_to(input_path)),
@@ -142,7 +182,7 @@ def main(
                 ld_mask,
             )
             ld_labeled.append(f"{img_path.parent.name}-{img_path.stem}")
-        if not mito_labels.exists() and not ld_labels.exists():
+        if (not mito_labels.exists()) or (not ld_labels.exists()):
             inference_only.append(f"{img_path.parent.name}-{img_path.stem}")
 
     df = pd.DataFrame(metadata)

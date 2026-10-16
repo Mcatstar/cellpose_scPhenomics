@@ -53,21 +53,7 @@ class FinetunePlan:
     dataset_class: str
     base_weights: str
 
-
-def count_dataset_images(train_dir: Path) -> tuple[int, int]:
-    """返回 empanada 数据集里的 (来源数据集个数, 图片总数)。
-
-    empanada 要求 ``<train_dir>/<source>/images/*``, 每个子目录算一个来源。
-    """
-    if not train_dir.is_dir():
-        return 0, 0
-
-    sources = [p for p in train_dir.iterdir() if (p / "images").is_dir()]
-    n_images = sum(len(list((p / "images").glob("*"))) for p in sources)
-    return len(sources), n_images
-
-
-def to_uint8(image: NDArray) -> NDArray[np.uint8]:
+def to_uint8(image: NDArray, lower: float = 1, upper: float = 99) -> NDArray[np.uint8]:
     """把任意位深的图线性映射到 uint8。
 
     empanada 的数据集用 ``cv2.imread(path, 0)`` 读图, 结果一定是 8 位; 先自己按
@@ -76,15 +62,12 @@ def to_uint8(image: NDArray) -> NDArray[np.uint8]:
     if image.dtype == np.uint8:
         return image
 
-    if np.issubdtype(image.dtype, np.integer):
-        peak = float(np.iinfo(image.dtype).max)
-        return np.rint(image.astype(np.float32) * (255.0 / peak)).astype(np.uint8)
-
-    top = float(image.max())
-    scale = 255.0 if top <= 1.0 else 255.0 / top
-    return np.clip(np.rint(image.astype(np.float32) * scale), 0.0, 255.0).astype(
-        np.uint8
-    )
+    image = image.astype(np.float32)
+    p_low, p_high = np.percentile(image, [lower, upper])
+    if p_high <= p_low:
+        p_high = p_low + 1e-6
+    scaled = np.clip((image - p_low) / (p_high - p_low) * 255.0, 0, 255)
+    return np.rint(scaled).astype(np.uint8)
 
 
 class EmpanadaFinetuner:
@@ -201,7 +184,15 @@ class EmpanadaFinetuner:
             )
             raise typer.Exit(code=1)
 
-        n_datasets, n_images = count_dataset_images(self.train_dir)
+        """获取empanada 数据集里的 (来源数据集个数, 图片总数)。
+        empanada 要求 ``<train_dir>/<source>/images/*``, 每个子目录算一个来源。
+        """
+        if not self.train_dir.is_dir():
+            n_datasets, n_images = 0, 0
+        sources = [p for p in self.train_dir.iterdir() if (p / "images").is_dir()]
+        n_images = sum(len(list((p / "images").glob("*"))) for p in sources)
+        n_datasets = len(sources)
+
         if n_images == 0:
             logger.error(
                 f"{self.train_dir} 下没有 <source>/images/*, 先跑 prepare 子命令, "
@@ -297,24 +288,9 @@ class LipidFinetuner(EmpanadaFinetuner):
     mask_suffix = "_ld_masks.tif"
 
 
-FINETUNERS: dict[str, type[EmpanadaFinetuner]] = {
-    "mito": MitoFinetuner,
-    "lipid": LipidFinetuner,
-}
-
-
-def lookup(target: str) -> type[EmpanadaFinetuner]:
-    """按名字取微调器类, 未知名直接退出并列出可选项。"""
-    if target not in FINETUNERS:
-        logger.error(f"未知的 target: {target}, 可选 {sorted(FINETUNERS)}")
-        raise typer.Exit(code=1)
-    return FINETUNERS[target]
-
 
 @app.command()
 def prepare(
-    target: str = "mito",
-    split: str = "train",
     train_dir: Path = PROCESSED_DATA_DIR / "finetune",
     eval_dir: Path = PROCESSED_DATA_DIR / "eval",
 ) -> None:
@@ -323,25 +299,27 @@ def prepare(
     split=train 落到 --train-dir, split=test 落到 --eval-dir, 两个目录都能直接
     交给 finetune 子命令。
     """
-    if split not in ("train", "test"):
-        logger.error(f"split 只能是 train 或 test, 收到 {split}")
-        raise typer.Exit(code=1)
-
-    finetuner = lookup(target)(
+    mito_finetuner = MitoFinetuner(
         train_dir=train_dir,
         model_dir=MODELS_DIR,
         eval_dir=eval_dir,
     )
-    finetuner.prepare(split)
+    ld_finetuner = LipidFinetuner(
+        train_dir=train_dir,
+        model_dir=MODELS_DIR,
+        eval_dir=eval_dir,
+    )
+    
+    mito_finetuner.prepare("train")
+    ld_finetuner.prepare("train")
+    # mito_finetuner.prepare("test")
+    # ld_finetuner.prepare("test")
 
-    flag = "--train-dir" if split == "train" else "--eval-dir"
-    dest = train_dir if split == "train" else eval_dir
-    logger.success(f"finetune: {flag} -> {dest}")
+    logger.success(f"Successfully finetune prepara.")
 
 
 @app.command()
 def finetune(
-    target: str = "mito",
     train_dir: Path = PROCESSED_DATA_DIR / "finetune",
     model_dir: Path = MODELS_DIR,
     model_name: str = "",
@@ -359,7 +337,18 @@ def finetune(
     设备由 empanada 自己选 (有 CUDA 就用 cuda:0, 否则 cpu), 这里没有开关。
     标注图不足模板默认的 16 张时, 用 --batch-size 调小。
     """
-    finetuner = lookup(target)(
+    mito_finetuner = MitoFinetuner(
+        train_dir=train_dir,
+        model_dir=model_dir,
+        model_name=model_name or None,
+        finetune_layer=finetune_layer,
+        iterations=iterations,
+        patch_size=patch_size,
+        eval_dir=eval_dir,
+        custom_config=custom_config,
+        batch_size=batch_size,
+    )
+    ld_finetuner = LipidFinetuner(
         train_dir=train_dir,
         model_dir=model_dir,
         model_name=model_name or None,
@@ -371,14 +360,16 @@ def finetune(
         batch_size=batch_size,
     )
 
-    finetuner.check()
+    mito_finetuner.check()
+    ld_finetuner.check()
 
     if check_only:
         logger.success("校验通过 (未加载模型, 未开始训练)")
         return
 
-    finetuner.launch(register=register)
-    logger.success(f"微调完成: {finetuner.model_name}")
+    mito_finetuner.launch(register=register)
+    ld_finetuner.launch(register=register)
+    logger.success(f"微调完成: {mito_finetuner.model_name}")
 
 
 if __name__ == "__main__":

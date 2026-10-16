@@ -183,12 +183,11 @@ def main(
 
     for img_path in tqdm(img_paths, desc="Inference"):
         img = imread(img_path)
+        stem = img_path.stem.removesuffix("_img")
 
         masks_mito = mito_predictor.predict(img)
-        masks_lipid = lipid_predictor.predict(img)
-
-        stem = img_path.stem.removesuffix("_img")
         imwrite(output_path / f"{stem}_mito_masks_pred.tif", masks_mito)
+        masks_lipid = lipid_predictor.predict(img)
         imwrite(output_path / f"{stem}_ld_masks_pred.tif", masks_lipid)
         logger.info(f"saved masks for {img_path.name}")
 
